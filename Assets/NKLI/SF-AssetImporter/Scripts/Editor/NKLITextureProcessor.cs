@@ -219,6 +219,13 @@ public class NKLITextureProcessor : AssetPostprocessor
     const float effectStrengthPainterly = 2.0f;
     const float effectStrengthPainterlyMax = 4.0f;
 
+    // Sobel edge guard on the painterly passes: colour/luma gradients above Lo
+    // begin restoring source detail, fully restored by Hi; Keep caps the
+    // restoration so the paint still unifies the surface
+    const float effectEdgeLo = 0.12f;
+    const float effectEdgeHi = 0.55f;
+    const float effectEdgeKeep = 0.85f;
+
     // Triangular facets across the width of each texture (keep integer so tiling textures wrap)
     const float effectFacetDensity = 48.0f;
 
@@ -317,14 +324,15 @@ public class NKLITextureProcessor : AssetPostprocessor
     static int height = 0;
 
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "13";
+    const string stylizationVersion = "14";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
     public static string EffectFingerprint()
     {
         return stylizationVersion + "|" + string.Join(",", NKLIAssetStylizer.excludedNameTokens) + "|" +
-            effectStrengthPainterly + "|" + effectStrengthPainterlyMax + "|" + effectFacetDensity + "|" +
+            effectStrengthPainterly + "|" + effectStrengthPainterlyMax + "|" +
+            effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" + effectFacetDensity + "|" +
             effectFacetJitter + "|" + effectFacetHueJitter + "|" + effectFacetSatJitter + "|" +
             effectFractalChance + "|" + effectFractalShade + "|" +
             effectSpecMetJitter + "|" + effectSpecMetFractalShade + "|" +
@@ -450,6 +458,15 @@ public class NKLITextureProcessor : AssetPostprocessor
                 return;
             }
 
+            // Import workers and headless editors have no GPU; the blit chain
+            // would silently no-op and commit garbage, so decline loudly instead
+            if (AssetDatabase.IsAssetImportWorkerProcess() ||
+                SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+            {
+                Debug.LogWarning("Somnia Fracta: no GPU available to this import process; texture left unstylized: " + assetPath);
+                return;
+            }
+
             if (!EnsureShaders())
             {
                 Debug.LogWarning("Somnia Fracta: effect shaders unavailable during this import; texture left unstylized: " + assetPath +
@@ -481,6 +498,11 @@ public class NKLITextureProcessor : AssetPostprocessor
             refRTSrc.GenerateMips();
 
 
+            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
+            bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
+            bool wraps = textureImporter.wrapMode == TextureWrapMode.Repeat;
+            Vector4 texSize = new Vector4(texture.width, texture.height, 0.0f, 0.0f);
+
             // Apply 'painterly' filter
             NKLIAssetStylizer.ReportSubStage("Painterly pass");
             materialPaint.SetFloat("_TimeX", 10);
@@ -491,12 +513,17 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialPaint.SetFloat("_FixDistance", 0.0f);
             materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
             materialPaint.SetVector("_ScreenResolution", new Vector4(texture.width, texture.height, 0.0f, 0.0f));
-            Graphics.Blit(refRTSrc, refRTIntPaint, materialPaint);
+            Graphics.Blit(refRTSrc, refRTInt, materialPaint);
 
-
-            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
-            bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
-            bool wraps = textureImporter.wrapMode == TextureWrapMode.Repeat;
+            // Sobel edge guard: restore source detail where the paint would
+            // smear strong colour or luma edges
+            materialMux.SetVector("_TexSize", texSize);
+            materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+            materialMux.SetFloat("_EdgeLo", effectEdgeLo);
+            materialMux.SetFloat("_EdgeHi", effectEdgeHi);
+            materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
+            materialMux.SetTexture("_PaintTex", refRTInt);
+            Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
 
             // Seed the Julia constant from the containing folder, so every map
             // of one asset shares a mask and every folder is a unique variation
@@ -509,17 +536,18 @@ public class NKLITextureProcessor : AssetPostprocessor
                 ((seed >> 19) & 0xFFu) / 255.0f, ((seed >> 24) & 0xFFu) / 255.0f);
             float juliaRotation = ((seed * 2654435761u) & 0xFFFFu) / 65535.0f * Mathf.PI * 2.0f;
 
-            Vector4 texSize = new Vector4(texture.width, texture.height, 0.0f, 0.0f);
-
             RenderTexture refRTGraded;
             bool isColour = !isNormalMap && !isSpecMetallic;
 
             if (isColour)
             {
-                // Deeper painterly pass for the regions the crystal leaves untouched
+                // Deeper painterly pass for the regions the crystal leaves
+                // untouched, through the same edge guard
                 NKLIAssetStylizer.ReportSubStage("Painterly pass (deep)");
                 materialPaint.SetFloat("_LightIntensity", effectStrengthPainterlyMax);
-                Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialPaint);
+                Graphics.Blit(refRTSrc, refRTInt, materialPaint);
+                materialMux.SetTexture("_PaintTex", refRTInt);
+                Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialMux, 2);
             }
 
             if (isNormalMap)
@@ -611,6 +639,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             refRTDst.GenerateMips();
             width = texture.width;
             height = texture.height;
+            bool readbackFailed = false;
             for (int m = 0; m < texture.mipmapCount - 1; ++m)
             {
                 NKLIAssetStylizer.ReportSubStage("Mip readback " + (m + 1) + "/" + (texture.mipmapCount - 1));
@@ -665,8 +694,24 @@ public class NKLITextureProcessor : AssetPostprocessor
 
                 Texture2D intTex = new Texture2D(width, height, texture.format, false);
 
-                AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, m, texture.format);
-                AsyncGPUReadback.WaitAllRequests();
+                // A failed readback leaves the shared array holding the previous
+                // texture's data; splicing that in would commit silent corruption,
+                // so failures retry once and then abort the import loudly
+                AsyncGPUReadbackRequest request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, m, texture.format);
+                request.WaitForCompletion();
+                if (request.hasError)
+                {
+                    request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, m, texture.format);
+                    request.WaitForCompletion();
+                }
+                if (request.hasError)
+                {
+                    Object.DestroyImmediate(intTex);
+                    if (npotArray)
+                        refArray.Dispose();
+                    readbackFailed = true;
+                    break;
+                }
 
                 intTex.LoadRawTextureData(refArray);
 
@@ -705,6 +750,13 @@ public class NKLITextureProcessor : AssetPostprocessor
             RenderTexture.ReleaseTemporary(refRTIntPaint);
             RenderTexture.ReleaseTemporary(refRTIntPaintStrong);
             RenderTexture.ReleaseTemporary(refRTGrade);
+
+            if (readbackFailed)
+            {
+                if (!NKLIAssetStylizer.bulkRunActive)
+                    NKLITextureProcessorArrayStorage.ReleaseResources();
+                throw new Exception("Somnia Fracta: GPU readback failed twice; texture left partially stylized: " + assetPath + " — reimport it to retry.");
+            }
 
             Debug.Log("Stylized: " + assetPath);
 

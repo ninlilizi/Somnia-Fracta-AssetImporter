@@ -65,6 +65,9 @@ Shader "Hidden/NKLIMuxPaintPixel"
         float _GuardLo;
         float _GuardHi;
         float _Wrap;
+        float _EdgeLo;
+        float _EdgeHi;
+        float _EdgeKeep;
 
         float hash21(float2 p)
         {
@@ -195,6 +198,57 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 float4 col = lerp(paint, facet, crystal);
                 col.a = tex2D(_MainTex, i.uv).a;
                 return col;
+            }
+            ENDCG
+        }
+
+        // Pass 2: edge-preserving paint composite — Sobel colour/luma edges of
+        // the source restore the detail the paint would smear
+        Pass
+        {
+            CGPROGRAM
+            #pragma vertex vertStraight
+            #pragma fragment frag
+            #pragma target 3.0
+
+            // Explicit LOD: the wrap seam's frac() jump would otherwise drive
+            // derivative-picked mips to garbage on the mipped source
+            float3 SampleSrc(float2 uv, float2 off)
+            {
+                float2 p = uv + off;
+                p = _Wrap > 0.5 ? frac(p) : saturate(p);
+                return tex2Dlod(_MainTex, float4(p, 0.0, 0.0)).rgb;
+            }
+
+            fixed4 frag (v2f i) : SV_Target
+            {
+                float2 t = 1.0 / _TexSize.xy;
+
+                float3 tl = SampleSrc(i.uv, float2(-t.x, -t.y));
+                float3 tc = SampleSrc(i.uv, float2( 0.0, -t.y));
+                float3 tr = SampleSrc(i.uv, float2( t.x, -t.y));
+                float3 ml = SampleSrc(i.uv, float2(-t.x,  0.0));
+                float3 mr = SampleSrc(i.uv, float2( t.x,  0.0));
+                float3 bl = SampleSrc(i.uv, float2(-t.x,  t.y));
+                float3 bc = SampleSrc(i.uv, float2( 0.0,  t.y));
+                float3 br = SampleSrc(i.uv, float2( t.x,  t.y));
+
+                float3 gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
+                float3 gy = (bl + 2.0 * bc + br) - (tl + 2.0 * tc + tr);
+
+                // Luma gradient for contrast edges; per-channel colour
+                // gradients catch the chroma edges luma alone would miss
+                float3 lw = float3(0.299, 0.587, 0.114);
+                float lumaEdge = length(float2(dot(gx, lw), dot(gy, lw)));
+                float3 chan = sqrt(gx * gx + gy * gy);
+                float colourEdge = max(chan.r, max(chan.g, chan.b));
+                float edge = max(lumaEdge, colourEdge);
+
+                float keep = smoothstep(_EdgeLo, _EdgeHi, edge) * _EdgeKeep;
+
+                float4 paint = tex2Dlod(_PaintTex, float4(i.uv, 0.0, 0.0));
+                float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+                return lerp(paint, src, keep);
             }
             ENDCG
         }

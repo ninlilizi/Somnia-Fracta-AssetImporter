@@ -246,7 +246,10 @@ Shader "Hidden/NKLIMuxPaintPixel"
 
                 float keep = smoothstep(_EdgeLo, _EdgeHi, edge) * _EdgeKeep;
 
-                float4 paint = tex2Dlod(_PaintTex, float4(i.uv, 0.0, 0.0));
+                // The bound paint sits one blit generation from the source and
+                // so carries inverted rows; sample it flipped to realign, or
+                // the blend ghosts the two orientations together
+                float4 paint = tex2Dlod(_PaintTex, float4(i.uv.x, 1.0 - i.uv.y, 0.0, 0.0));
                 float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
                 return lerp(paint, src, keep);
             }

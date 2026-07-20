@@ -13,6 +13,23 @@ public class NKLIAssetStylizer : MonoBehaviour
     // Textures whose file name carries any of these tokens import untouched
     public static readonly string[] excludedNameTokens = { "Mask", "AO" };
 
+    // Suffix conventions for occlusion/mask maps (e.g. prop_barrel_01_o);
+    // matched case-insensitively against the end of the file name, where even
+    // a short token is unambiguous
+    public static readonly string[] excludedNameSuffixes = { "_o", "_ao", "_occ", "_occlusion", "_mask" };
+
+    // File types never stylized: .exr and .hdr carry skybox/HDR data rather
+    // than scene-geometry texture, .fbx textures are embedded in models
+    static readonly string[] excludedExtensions = { ".exr", ".hdr", ".fbx" };
+
+    public static bool IsExtensionExcluded(string path)
+    {
+        foreach (string ext in excludedExtensions)
+            if (path.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
     const string progressTitle = "Somnia Fracta";
 
     // Custom dependency binding marked textures to the stylization settings, so
@@ -49,12 +66,17 @@ public class NKLIAssetStylizer : MonoBehaviour
         return occlusionTextures.Contains(AssetDatabase.AssetPathToGUID(path));
     }
 
-    // Case-sensitive, so "AO" cannot ambush the "ao" inside ordinary words
+    // Contains-tokens are case-sensitive, so "AO" cannot ambush the "ao"
+    // inside ordinary words; suffix-tokens are anchored to the name's end and
+    // so can afford to ignore case
     public static bool IsNameExcluded(string path)
     {
         string fileName = System.IO.Path.GetFileNameWithoutExtension(path);
         foreach (string token in excludedNameTokens)
             if (fileName.IndexOf(token, StringComparison.Ordinal) != -1)
+                return true;
+        foreach (string suffix in excludedNameSuffixes)
+            if (fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
                 return true;
         return false;
     }
@@ -520,8 +542,7 @@ public class NKLIAssetStylizer : MonoBehaviour
 
             string lowerCaseAssetPath = assetPath.ToLower();
             if (lowerCaseAssetPath.IndexOf(targetString) != -1 &&
-                lowerCaseAssetPath.IndexOf(".exr") == -1 &&
-                lowerCaseAssetPath.IndexOf(".fbx") == -1)
+                !IsExtensionExcluded(assetPath))
                 assets.Add(assetPath);
 
             if (i % 200 == 0)

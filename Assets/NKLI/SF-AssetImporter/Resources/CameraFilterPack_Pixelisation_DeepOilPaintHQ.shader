@@ -90,6 +90,10 @@ Shader "CameraFilterPack/Deep_OilPaintHQ" {
 	depth /= _FixDistance * 10;
 	float ss = smoothstep(_Near, saturate(_Near + _Far), depth);
 	depth = ss;
+	// NKLI: a negative _FixDistance bypasses the depth path entirely; during
+	// asset import there is no camera, and _CameraDepthTexture holds stale
+	// editor state that would shape the paint radius nondeterministically
+	if (_FixDistance < 0) depth = 1;
 	if (_Visualize == 1) return depth;
 
 	float _Value = _LightIntensity * depth;

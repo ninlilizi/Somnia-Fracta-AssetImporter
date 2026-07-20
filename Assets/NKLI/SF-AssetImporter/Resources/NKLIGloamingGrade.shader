@@ -45,7 +45,7 @@ Shader "Hidden/NKLIGloamingGrade"
             float4 _LiftColor;
             float4 _ShadowTint;
             float4 _HighlightTint;
-            float _Desaturate;
+            float _Vibrance;
 
             fixed4 frag (v2f i) : SV_Target
             {
@@ -59,7 +59,13 @@ Shader "Hidden/NKLIGloamingGrade"
                 col = col * (1.0 - _Lift) + _LiftColor.rgb * _Lift;
 
                 float luma = dot(col, float3(0.299, 0.587, 0.114));
-                col = lerp(col, luma.xxx, _Desaturate);
+
+                // Vibrance: enrich muted colours more than already-vivid ones,
+                // deepening the existing palette without pushing it garish
+                float cmax = max(col.r, max(col.g, col.b));
+                float cmin = min(col.r, min(col.g, col.b));
+                float sat = (cmax - cmin) / max(cmax, 1.0e-4);
+                col = lerp(luma.xxx, col, 1.0 + _Vibrance * (1.0 - sat));
 
                 // Split-tone: dusk in the shadows, last light in the highlights
                 float t = smoothstep(0.25, 0.8, luma);

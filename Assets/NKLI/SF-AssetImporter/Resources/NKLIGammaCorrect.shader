@@ -29,12 +29,13 @@ Shader "Hidden/NKLIGammaCorrect"
                 float4 vertex : SV_POSITION;
             };
 
+            // No flip here: the mux composite's flip and the top-down readback
+            // pair to even parity. A third mirror y-flipped every baked texture
             v2f vert(appdata v)
             {
                 v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
-                o.uv.x = v.uv.x;
-                o.uv.y = 1 - v.uv.y;
+                o.uv = v.uv;
                 return o;
             }
 
@@ -45,7 +46,14 @@ Shader "Hidden/NKLIGammaCorrect"
                 float4 col = tex2D(_MainTex, i.uv);
                 float alpha = col.a;
 
-                col = pow(col, 0.454545);
+                // Exact inverse of the piecewise sRGB decode the hardware
+                // applied when the source was sampled; a pow(1/2.2)
+                // approximation would lift the darks the sRGB toe keeps linear.
+                // Saturate first: pow of a negative is NaN
+                float3 c = saturate(col.rgb);
+                float3 lo = c * 12.92;
+                float3 hi = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+                col.rgb = lerp(hi, lo, step(c, 0.0031308));
 
                 return float4(col.rgb, alpha);
             }

@@ -274,7 +274,9 @@ public class NKLITextureProcessor : AssetPostprocessor
     const float effectGlowAmount = 0.35f;
     const float effectGlowMip = 3.0f;
     const float effectLift = 0.045f;
-    const float effectDesaturate = 0.08f;
+
+    // Vibrance strength: muted colours are enriched more than vivid ones
+    const float effectVibrance = 0.35f;
     static readonly Color effectLiftColor = new Color(0.10f, 0.07f, 0.16f);
     static readonly Color effectShadowTint = new Color(0.88f, 0.82f, 0.98f);
     static readonly Color effectHighlightTint = new Color(1.0f, 0.97f, 0.88f);
@@ -324,13 +326,14 @@ public class NKLITextureProcessor : AssetPostprocessor
     static int height = 0;
 
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "14";
+    const string stylizationVersion = "22";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
     public static string EffectFingerprint()
     {
         return stylizationVersion + "|" + string.Join(",", NKLIAssetStylizer.excludedNameTokens) + "|" +
+            string.Join(",", NKLIAssetStylizer.excludedNameSuffixes) + "|" +
             effectStrengthPainterly + "|" + effectStrengthPainterlyMax + "|" +
             effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" + effectFacetDensity + "|" +
             effectFacetJitter + "|" + effectFacetHueJitter + "|" + effectFacetSatJitter + "|" +
@@ -343,7 +346,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             effectMaskSoften + "|" + effectCrystalMax + "|" +
             effectGuardLo + "|" + effectGuardHi + "|" +
             effectGlowAmount + "|" + effectGlowMip + "|" + effectLift + "|" +
-            effectDesaturate + "|" + effectLiftColor + "|" + effectShadowTint + "|" +
+            effectVibrance + "|" + effectLiftColor + "|" + effectShadowTint + "|" +
             effectHighlightTint;
     }
 
@@ -424,8 +427,10 @@ public class NKLITextureProcessor : AssetPostprocessor
 
         // Marked textures depend on the global settings fingerprint and on their
         // own classification entry, so material slot changes re-bake exactly the
-        // textures whose role changed
-        if (assetPath.ToLower().IndexOf(NKLIAssetStylizer.targetString) != -1)
+        // textures whose role changed. Excluded file types stay inert: no
+        // dependencies, so fingerprint changes never reimport them
+        if (assetPath.ToLower().IndexOf(NKLIAssetStylizer.targetString) != -1 &&
+            !NKLIAssetStylizer.IsExtensionExcluded(assetPath))
         {
             context.DependsOnCustomDependency(NKLIAssetStylizer.dependencyName);
             context.DependsOnCustomDependency(NKLIAssetStylizer.ClassDependencyName(AssetDatabase.AssetPathToGUID(assetPath)));
@@ -451,8 +456,10 @@ public class NKLITextureProcessor : AssetPostprocessor
         TextureImporter textureImporter = (TextureImporter)assetImporter;
         if (textureImporter.textureType == TextureImporterType.Default || textureImporter.textureType == TextureImporterType.NormalMap)
         {
-            // Occlusion maps and name-excluded textures pass through in their pure state
-            if (NKLIAssetStylizer.IsOcclusion(assetPath) || NKLIAssetStylizer.IsNameExcluded(assetPath))
+            // Occlusion maps, name-excluded textures and excluded file types
+            // (skybox .exr) pass through in their pure state
+            if (NKLIAssetStylizer.IsOcclusion(assetPath) || NKLIAssetStylizer.IsNameExcluded(assetPath) ||
+                NKLIAssetStylizer.IsExtensionExcluded(assetPath))
             {
                 Debug.Log("Texture left pristine: " + assetPath);
                 return;
@@ -491,7 +498,10 @@ public class NKLITextureProcessor : AssetPostprocessor
             RenderTexture refRTIntPaintStrong = RenderTexture.GetTemporary(rtDesc);
             RenderTexture refRTGrade = RenderTexture.GetTemporary(rtDesc);
 
-            // Copy to GPU; mips feed the facet pass's area-averaged sampling
+            // Regenerating mips here is load-bearing: the CPU-side mip levels
+            // are not reliably populated at postprocess time, and the alpha
+            // splice reads them via GetPixels — without this it splices
+            // uninitialized memory into every mip's alpha
             texture.Apply(true, false);
             Graphics.Blit(texture, refRTSrc);
             refRTSrc.filterMode = FilterMode.Trilinear;
@@ -510,7 +520,10 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialPaint.SetFloat("_Near", 0.0f);
             materialPaint.SetFloat("_Visualize", 0);
             materialPaint.SetFloat("_FarCamera", 1.0f);
-            materialPaint.SetFloat("_FixDistance", 0.0f);
+            // Negative sentinel: bypasses the shader's depth path (see the
+            // NKLI note in the shader), which otherwise samples a stale scene
+            // depth texture mid-import
+            materialPaint.SetFloat("_FixDistance", -1.0f);
             materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
             materialPaint.SetVector("_ScreenResolution", new Vector4(texture.width, texture.height, 0.0f, 0.0f));
             Graphics.Blit(refRTSrc, refRTInt, materialPaint);
@@ -619,15 +632,17 @@ public class NKLITextureProcessor : AssetPostprocessor
                 materialGrade.SetColor("_LiftColor", effectLiftColor);
                 materialGrade.SetColor("_ShadowTint", effectShadowTint);
                 materialGrade.SetColor("_HighlightTint", effectHighlightTint);
-                materialGrade.SetFloat("_Desaturate", effectDesaturate);
+                materialGrade.SetFloat("_Vibrance", effectVibrance);
                 Graphics.Blit(refRTInt, refRTGrade, materialGrade);
                 refRTGraded = refRTGrade;
             }
             else
                 refRTGraded = refRTInt;
 
-            // Gamma correction if sRGB
-            if (!isNormalMap && textureImporter.sRGBTexture)
+            // Re-encode only what the initial sample decoded: sRGB-flagged
+            // textures in a linear-colour-space project. Gamma-space projects
+            // sample raw, so their pixels round-trip without conversion
+            if (!isNormalMap && textureImporter.sRGBTexture && PlayerSettings.colorSpace == ColorSpace.Linear)
             {
                 Graphics.Blit(refRTGraded, refRTDst, materialGamma);
             }
@@ -635,14 +650,14 @@ public class NKLITextureProcessor : AssetPostprocessor
                 Graphics.Blit(refRTGraded, refRTDst, materialFlip);
 
 
-            // Finish processing and copy all mip slices to the CPU
-            refRTDst.GenerateMips();
+            // Only the base level is read back from the GPU; the lower mips
+            // are rebuilt on the CPU from it, beyond the reach of per-mip
+            // readback orientation and stride hazards
+            NKLIAssetStylizer.ReportSubStage("Readback");
             width = texture.width;
             height = texture.height;
             bool readbackFailed = false;
-            for (int m = 0; m < texture.mipmapCount - 1; ++m)
             {
-                NKLIAssetStylizer.ReportSubStage("Mip readback " + (m + 1) + "/" + (texture.mipmapCount - 1));
                 bool npotArray = false;
                 NativeArray<float> refArray;
                 switch ((int)(width * height * 4))
@@ -697,44 +712,88 @@ public class NKLITextureProcessor : AssetPostprocessor
                 // A failed readback leaves the shared array holding the previous
                 // texture's data; splicing that in would commit silent corruption,
                 // so failures retry once and then abort the import loudly
-                AsyncGPUReadbackRequest request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, m, texture.format);
+                AsyncGPUReadbackRequest request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, 0, texture.format);
                 request.WaitForCompletion();
                 if (request.hasError)
                 {
-                    request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, m, texture.format);
+                    request = AsyncGPUReadback.RequestIntoNativeArray(ref refArray, refRTDst, 0, texture.format);
                     request.WaitForCompletion();
                 }
                 if (request.hasError)
                 {
-                    Object.DestroyImmediate(intTex);
-                    if (npotArray)
-                        refArray.Dispose();
                     readbackFailed = true;
-                    break;
                 }
-
-                intTex.LoadRawTextureData(refArray);
-
-                // Alpha passes through unmolested: splice each original mip's
-                // alpha back over the processed colour, bit for bit, beyond the
-                // reach of any GPU pass or readback format conversion
-                Color[] processed = intTex.GetPixels(0);
-                Color[] original = texture.GetPixels(m);
-                for (int p = 0; p < processed.Length; p++)
-                    processed[p].a = original[p].a;
-
-                texture.SetPixels(processed, m);
-                Object.DestroyImmediate(intTex);
-
-                if (npotArray)
+                else
                 {
-                    refArray.Dispose();
+                    intTex.LoadRawTextureData(refArray);
+
+                    // Alpha passes through unmolested: splice the original base
+                    // alpha back over the processed colour, bit for bit, beyond
+                    // the reach of any GPU pass or readback format conversion
+                    Color[] processed = intTex.GetPixels(0);
+                    Color[] original = texture.GetPixels(0);
+
+                    // The chain's net row order follows graphics-API blit
+                    // conventions; measure which orientation correlates with
+                    // the source and correct in place, so bakes land upright
+                    // on every backend
+                    float diffStraight = 0.0f;
+                    float diffFlipped = 0.0f;
+                    int stride = Mathf.Max(1, (width * height) / 16384);
+                    for (int p = 0; p < processed.Length; p += stride)
+                    {
+                        int row = p / width;
+                        int pf = (height - 1 - row) * width + (p - row * width);
+                        float lo = original[p].r * 0.299f + original[p].g * 0.587f + original[p].b * 0.114f;
+                        diffStraight += Mathf.Abs(processed[p].r * 0.299f + processed[p].g * 0.587f + processed[p].b * 0.114f - lo);
+                        diffFlipped += Mathf.Abs(processed[pf].r * 0.299f + processed[pf].g * 0.587f + processed[pf].b * 0.114f - lo);
+                    }
+                    if (diffFlipped < diffStraight)
+                    {
+                        Color[] flipped = new Color[processed.Length];
+                        for (int row = 0; row < height; row++)
+                            System.Array.Copy(processed, row * width, flipped, (height - 1 - row) * width, width);
+                        processed = flipped;
+                    }
+
+                    for (int p = 0; p < processed.Length; p++)
+                        processed[p].a = original[p].a;
+                    texture.SetPixels(processed, 0);
+
+                    // Box-filter the corrected base down the whole chain,
+                    // spliced alpha included; the final mip is no longer left
+                    // to chance
+                    NKLIAssetStylizer.ReportSubStage("Building mips");
+                    Color[] prev = processed;
+                    int pw = width;
+                    int ph = height;
+                    for (int m = 1; m < texture.mipmapCount; ++m)
+                    {
+                        int mw = Mathf.Max(1, pw / 2);
+                        int mh = Mathf.Max(1, ph / 2);
+                        Color[] level = new Color[mw * mh];
+                        for (int y = 0; y < mh; y++)
+                        {
+                            int y0 = Mathf.Min(y * 2, ph - 1);
+                            int y1 = Mathf.Min(y * 2 + 1, ph - 1);
+                            for (int x = 0; x < mw; x++)
+                            {
+                                int x0 = Mathf.Min(x * 2, pw - 1);
+                                int x1 = Mathf.Min(x * 2 + 1, pw - 1);
+                                level[y * mw + x] = (prev[y0 * pw + x0] + prev[y0 * pw + x1] +
+                                    prev[y1 * pw + x0] + prev[y1 * pw + x1]) * 0.25f;
+                            }
+                        }
+                        texture.SetPixels(level, m);
+                        prev = level;
+                        pw = mw;
+                        ph = mh;
+                    }
                 }
 
-                // Mip dimensions clamp at 1; naive halving would reach 0 on
-                // non-square textures before the chain ends
-                width = Mathf.Max(1, width / 2);
-                height = Mathf.Max(1, height / 2);
+                Object.DestroyImmediate(intTex);
+                if (npotArray)
+                    refArray.Dispose();
             }
 
 
@@ -755,7 +814,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             {
                 if (!NKLIAssetStylizer.bulkRunActive)
                     NKLITextureProcessorArrayStorage.ReleaseResources();
-                throw new Exception("Somnia Fracta: GPU readback failed twice; texture left partially stylized: " + assetPath + " — reimport it to retry.");
+                throw new Exception("Somnia Fracta: GPU readback failed twice; texture left unstylized: " + assetPath + " — reimport it to retry.");
             }
 
             Debug.Log("Stylized: " + assetPath);

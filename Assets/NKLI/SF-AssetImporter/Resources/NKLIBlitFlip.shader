@@ -29,12 +29,14 @@ Shader "Hidden/NKLIBlitFlip"
                 float4 vertex : SV_POSITION;
             };
 
+            // Historical name aside, this pass no longer flips: the mux
+            // composite's flip and the top-down readback pair to even parity.
+            // A third mirror y-flipped every baked texture
             v2f vert(appdata v)
             {
                 v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
-                o.uv.x = v.uv.x;
-                o.uv.y = 1 - v.uv.y;
+                o.uv = v.uv;
                 return o;
             }
 

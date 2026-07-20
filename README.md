@@ -8,6 +8,10 @@ This is intended for use in my own games, however it shows off how to perform so
 
 *Stylized textures in-engine — faceted walls with gasket detail, painterly surfaces, gloaming grade.*
 
+[![In-engine close-up of a glossy platform whose surface shimmers with facet-aligned specular glints and scattered gasket detail](Images/example2.png)](Images/example2.png)
+
+*Spec/metallic shimmer in-engine — crystal facets catching the light across a glossy platform surface.*
+
 ## Effect
 
 - **Painterly base** — Kuwahara oil-paint filtering, deepening where the crystal effect recedes.

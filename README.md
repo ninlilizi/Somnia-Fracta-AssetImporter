@@ -26,17 +26,16 @@ This is intended for use in my own games, however it shows off how to perform so
 ## Requirements
 
 - Unity 2022 or Unity 6. No package dependencies.
-- BIRP or URP (the effect shaders are editor-side blits, independent of the project's runtime render pipeline).
 
 ## Usage
 
 1. Include `-style-sf` anywhere in a texture's path (folder or file name).
 2. Marked textures stylize automatically on every import: fresh imports, right-click → Reimport, Library rebuilds, platform switches.
 3. For a bulk re-bake with progress dialogue and Cancel: **NKLI → Bulk Stylize Assets → Somnia-Fracta**.
-4. Spec/metallic assignments are tracked live: importing or saving a material updates a classification database (cached in Library), and only the textures whose role changed re-bake automatically moments later. The bulk run also rescans every material as a seeding/repair pass.
+4. Spec/metallic assignments are tracked live: importing or saving a material updates a classification database (cached in Library), and only the textures whose role changed re-bake automatically. The bulk run also rescans every material as a seeding/repair pass.
 5. Deleting the Library rebuilds textures unstylized (the effect's caches burn with it) — the tool detects the fresh Library at startup and offers to run the bulk pass; accept, or run the menu manually.
 
-`.exr` and `.fbx` assets are excluded. Textures with Repeat wrap mode use tiling-safe lattice, noise and fractal domains.
+`/hdr`, `.exr` and `.fbx` assets are excluded.
 
 ## Tuning
 
@@ -50,4 +49,4 @@ All dials are `const` values at the top of `Scripts/Editor/NKLITextureProcessor.
 - `Resources/NKLIMuxPaintPixel.shader` — Julia mask generation and composite.
 - `Resources/NKLIGloamingGrade.shader` — colour grade.
 - `Resources/NKLIGammaCorrect.shader`, `Resources/NKLIBlitFlip.shader` — plumbing.
-- `Resources/CameraFilterPack_*.shader` — third-party (VETASOFT) Kuwahara paint filter; pixelisation shader retained but unused.
+- `Resources/CameraFilterPack_*.shader` — third-party (VETASOFT) Kuwahara paint filter;

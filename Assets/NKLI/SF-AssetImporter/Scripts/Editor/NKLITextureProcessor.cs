@@ -326,7 +326,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static int height = 0;
 
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "22";
+    const string stylizationVersion = "23";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
@@ -510,33 +510,44 @@ public class NKLITextureProcessor : AssetPostprocessor
 
             bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
             bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
+            bool isColour = !isNormalMap && !isSpecMetallic;
             bool wraps = textureImporter.wrapMode == TextureWrapMode.Repeat;
             Vector4 texSize = new Vector4(texture.width, texture.height, 0.0f, 0.0f);
 
-            // Apply 'painterly' filter
-            NKLIAssetStylizer.ReportSubStage("Painterly pass");
-            materialPaint.SetFloat("_TimeX", 10);
-            materialPaint.SetFloat("_Far", 0.5f);
-            materialPaint.SetFloat("_Near", 0.0f);
-            materialPaint.SetFloat("_Visualize", 0);
-            materialPaint.SetFloat("_FarCamera", 1.0f);
-            // Negative sentinel: bypasses the shader's depth path (see the
-            // NKLI note in the shader), which otherwise samples a stale scene
-            // depth texture mid-import
-            materialPaint.SetFloat("_FixDistance", -1.0f);
-            materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
-            materialPaint.SetVector("_ScreenResolution", new Vector4(texture.width, texture.height, 0.0f, 0.0f));
-            Graphics.Blit(refRTSrc, refRTInt, materialPaint);
+            if (isColour)
+            {
+                // Apply 'painterly' filter
+                NKLIAssetStylizer.ReportSubStage("Painterly pass");
+                materialPaint.SetFloat("_TimeX", 10);
+                materialPaint.SetFloat("_Far", 0.5f);
+                materialPaint.SetFloat("_Near", 0.0f);
+                materialPaint.SetFloat("_Visualize", 0);
+                materialPaint.SetFloat("_FarCamera", 1.0f);
+                // Negative sentinel: bypasses the shader's depth path (see the
+                // NKLI note in the shader), which otherwise samples a stale
+                // scene depth texture mid-import
+                materialPaint.SetFloat("_FixDistance", -1.0f);
+                materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
+                materialPaint.SetVector("_ScreenResolution", new Vector4(texture.width, texture.height, 0.0f, 0.0f));
+                Graphics.Blit(refRTSrc, refRTInt, materialPaint);
 
-            // Sobel edge guard: restore source detail where the paint would
-            // smear strong colour or luma edges
-            materialMux.SetVector("_TexSize", texSize);
-            materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-            materialMux.SetFloat("_EdgeLo", effectEdgeLo);
-            materialMux.SetFloat("_EdgeHi", effectEdgeHi);
-            materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
-            materialMux.SetTexture("_PaintTex", refRTInt);
-            Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
+                // Sobel edge guard: restore source detail where the paint would
+                // smear strong colour or luma edges
+                materialMux.SetVector("_TexSize", texSize);
+                materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+                materialMux.SetFloat("_EdgeLo", effectEdgeLo);
+                materialMux.SetFloat("_EdgeHi", effectEdgeHi);
+                materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
+                materialMux.SetTexture("_PaintTex", refRTInt);
+                Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
+            }
+            else
+            {
+                // Normal and spec/metallic maps stay unpainted, but still pass
+                // through one copy blit so the composite's bound layers share
+                // the painted branch's blit generation and stay row-aligned
+                Graphics.Blit(refRTSrc, refRTIntPaint);
+            }
 
             // Seed the Julia constant from the containing folder, so every map
             // of one asset shares a mask and every folder is a unique variation
@@ -550,7 +561,6 @@ public class NKLITextureProcessor : AssetPostprocessor
             float juliaRotation = ((seed * 2654435761u) & 0xFFFFu) / 65535.0f * Mathf.PI * 2.0f;
 
             RenderTexture refRTGraded;
-            bool isColour = !isNormalMap && !isSpecMetallic;
 
             if (isColour)
             {
@@ -561,13 +571,6 @@ public class NKLITextureProcessor : AssetPostprocessor
                 Graphics.Blit(refRTSrc, refRTInt, materialPaint);
                 materialMux.SetTexture("_PaintTex", refRTInt);
                 Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialMux, 2);
-            }
-
-            if (isNormalMap)
-            {
-                // The facet pass reads the painterly normals through tex2Dlod
-                refRTIntPaint.filterMode = FilterMode.Trilinear;
-                refRTIntPaint.GenerateMips();
             }
 
             // Apply triangular facet filter. Colour maps take the full fill
@@ -585,7 +588,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialFacet.SetFloat("_NormalPerturb", isNormalMap ? effectNormalPerturb : 0.0f);
             materialFacet.SetFloat("_LatticeWarp", effectLatticeWarp);
             materialFacet.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-            Graphics.Blit(isNormalMap ? refRTIntPaint : refRTSrc, refRTIntFacet, materialFacet);
+            Graphics.Blit(refRTSrc, refRTIntFacet, materialFacet);
 
             // Render the Julia crystallization mask, then mip-blur it so
             // crystal and paint trade places across wide, gentle borders
@@ -604,9 +607,9 @@ public class NKLITextureProcessor : AssetPostprocessor
             refRTMask.GenerateMips();
 
             // Composite the base and facets through the softened mask. Colour
-            // maps blend between the two paint strengths; spec/metallic maps
-            // blend facets over the untouched source; normals over the paint
-            RenderTexture refRTBase = isSpecMetallic ? refRTSrc : refRTIntPaint;
+            // maps blend between the two paint strengths; spec/metallic and
+            // normal maps blend facets over their untouched source copy
+            RenderTexture refRTBase = refRTIntPaint;
             materialMux.SetTexture("_PaintTex", refRTBase);
             materialMux.SetTexture("_PaintStrongTex", isColour ? refRTIntPaintStrong : refRTBase);
             materialMux.SetTexture("_FacetTex", refRTIntFacet);

@@ -2,7 +2,7 @@
 
 Somnia Fracta — a Unity editor import filter that bakes a painterly/fractal stylization directly into textures at import time. Zero runtime cost; source files are never modified.
 
-This is intended for use in my own games, however it shows off how to perform some cool tricks, so sharing for the educational value.
+This is intended for use in my own games, however it shows off how to perform some cool tricks, most notably running custom shader passes on incoming textures, so sharing for the educational value.
 
 [![In-engine scene with stylized textures: triangular facet mosaic and Sierpinski gasket detail across the walls, painterly grade throughout](Images/example.png)](Images/example.png)
 

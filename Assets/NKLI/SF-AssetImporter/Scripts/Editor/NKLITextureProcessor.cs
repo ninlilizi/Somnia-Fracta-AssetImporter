@@ -226,6 +226,14 @@ public class NKLITextureProcessor : AssetPostprocessor
     const float effectEdgeHi = 0.55f;
     const float effectEdgeKeep = 0.85f;
 
+    // Flow-guided brushwork: the paint is smeared along the content's own
+    // gradient flow, so strokes follow grain and contour. Lengths in texels;
+    // the deep pass strokes longer. FlowMip picks the blurred mip steering the
+    // field — higher values give broader, calmer flow
+    const float effectStrokeLength = 6.0f;
+    const float effectStrokeLengthDeep = 10.0f;
+    const float effectFlowMip = 2.0f;
+
     // Triangular facets across the width of each texture (keep integer so tiling textures wrap)
     const float effectFacetDensity = 48.0f;
 
@@ -241,6 +249,19 @@ public class NKLITextureProcessor : AssetPostprocessor
     // Perturbation of specular/metallic maps so facets catch the light
     const float effectSpecMetJitter = 0.06f;
     const float effectSpecMetFractalShade = 0.1f;
+
+    // Facet sparkle: this fraction of facets spike their smoothness (alpha)
+    // on spec/metallic maps, so crystal zones glint as the view moves
+    const float effectSparkleChance = 0.07f;
+    const float effectSparkleAmount = 0.35f;
+
+    // Prismatic dispersion: facet fills split R and B along each facet's
+    // hashed direction by this many source texels, as light through crystal
+    const float effectDispersion = 2.0f;
+
+    // Unsharp strength applied to each CPU-built mip's RGB, keeping the
+    // crystalline character legible at distance
+    const float effectMipSharpen = 0.35f;
 
     // Per-facet normal tilt; gentle enough to survive mip averaging
     const float effectNormalPerturb = 0.05f;
@@ -302,6 +323,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static Shader shaderPaint;
     static Shader shaderFacet;
     static Shader shaderGrade;
+    static Shader shaderFlow;
 
     static Material materialGamma;
     static Material materialFlip;
@@ -309,6 +331,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static Material materialPaint;
     static Material materialFacet;
     static Material materialGrade;
+    static Material materialFlow;
 
     static RenderTextureDescriptor rtDesc = new RenderTextureDescriptor
     {
@@ -326,7 +349,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static int height = 0;
 
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "23";
+    const string stylizationVersion = "31";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
@@ -335,10 +358,13 @@ public class NKLITextureProcessor : AssetPostprocessor
         return stylizationVersion + "|" + string.Join(",", NKLIAssetStylizer.excludedNameTokens) + "|" +
             string.Join(",", NKLIAssetStylizer.excludedNameSuffixes) + "|" +
             effectStrengthPainterly + "|" + effectStrengthPainterlyMax + "|" +
-            effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" + effectFacetDensity + "|" +
+            effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" +
+            effectStrokeLength + "|" + effectStrokeLengthDeep + "|" + effectFlowMip + "|" + effectFacetDensity + "|" +
             effectFacetJitter + "|" + effectFacetHueJitter + "|" + effectFacetSatJitter + "|" +
             effectFractalChance + "|" + effectFractalShade + "|" +
             effectSpecMetJitter + "|" + effectSpecMetFractalShade + "|" +
+            effectSparkleChance + "|" + effectSparkleAmount + "|" +
+            effectDispersion + "|" + effectMipSharpen + "|" +
             effectNormalPerturb + "|" +
             effectLatticeWarp + "|" + effectJuliaZoom + "|" + effectJuliaWarp + "|" +
             effectFiligree + "|" + effectPool + "|" + effectMaskNoise + "|" +
@@ -380,7 +406,8 @@ public class NKLITextureProcessor : AssetPostprocessor
     static bool EnsureShaders()
     {
         if (materialGamma != null && materialFlip != null && materialMux != null &&
-            materialPaint != null && materialFacet != null && materialGrade != null)
+            materialPaint != null && materialFacet != null && materialGrade != null &&
+            materialFlow != null)
             return true;
 
         shaderGamma = FindShaderRobust("Hidden/NKLIGammaCorrect", "NKLIGammaCorrect");
@@ -389,9 +416,11 @@ public class NKLITextureProcessor : AssetPostprocessor
         shaderPaint = FindShaderRobust("CameraFilterPack/Deep_OilPaintHQ", "CameraFilterPack_Pixelisation_DeepOilPaintHQ");
         shaderFacet = FindShaderRobust("Hidden/NKLITriangleFacet", "NKLITriangleFacet");
         shaderGrade = FindShaderRobust("Hidden/NKLIGloamingGrade", "NKLIGloamingGrade");
+        shaderFlow = FindShaderRobust("Hidden/NKLIFlowStroke", "NKLIFlowStroke");
 
         if (shaderGamma == null || shaderFlip == null || shaderMux == null ||
-            shaderPaint == null || shaderFacet == null || shaderGrade == null)
+            shaderPaint == null || shaderFacet == null || shaderGrade == null ||
+            shaderFlow == null)
             return false;
 
         if (materialGamma == null) materialGamma = CreateEffectMaterial(shaderGamma);
@@ -400,6 +429,7 @@ public class NKLITextureProcessor : AssetPostprocessor
         if (materialPaint == null) materialPaint = CreateEffectMaterial(shaderPaint);
         if (materialFacet == null) materialFacet = CreateEffectMaterial(shaderFacet);
         if (materialGrade == null) materialGrade = CreateEffectMaterial(shaderGrade);
+        if (materialFlow == null) materialFlow = CreateEffectMaterial(shaderFlow);
 
         return true;
     }
@@ -474,183 +504,33 @@ public class NKLITextureProcessor : AssetPostprocessor
                 return;
             }
 
-            if (!EnsureShaders())
-            {
-                Debug.LogWarning("Somnia Fracta: effect shaders unavailable during this import; texture left unstylized: " + assetPath +
-                    ". Run 'NKLI/Bulk Stylize Assets/Somnia-Fracta' once the import completes.");
-                return;
-            }
-
-            RenderTexture RTActive = RenderTexture.active;
-
-            // Allocate Native Arrays
-            NKLITextureProcessorArrayStorage.AllocateResources();
-
-            rtDesc.width = texture.width;
-            rtDesc.height = texture.height;
-            rtDesc.mipCount = texture.mipmapCount;
-            RenderTexture refRTSrc = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTDst = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTInt = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTIntFacet = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTMask = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTIntPaint = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTIntPaintStrong = RenderTexture.GetTemporary(rtDesc);
-            RenderTexture refRTGrade = RenderTexture.GetTemporary(rtDesc);
+            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
+            bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
+            bool srgbEncode = !isNormalMap && textureImporter.sRGBTexture && PlayerSettings.colorSpace == ColorSpace.Linear;
 
             // Regenerating mips here is load-bearing: the CPU-side mip levels
             // are not reliably populated at postprocess time, and the alpha
             // splice reads them via GetPixels — without this it splices
             // uninitialized memory into every mip's alpha
             texture.Apply(true, false);
-            Graphics.Blit(texture, refRTSrc);
-            refRTSrc.filterMode = FilterMode.Trilinear;
-            refRTSrc.GenerateMips();
 
+            rtDesc.width = texture.width;
+            rtDesc.height = texture.height;
+            rtDesc.mipCount = texture.mipmapCount;
+            RenderTexture refRTDst = RenderTexture.GetTemporary(rtDesc);
 
-            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
-            bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
-            bool isColour = !isNormalMap && !isSpecMetallic;
-            bool wraps = textureImporter.wrapMode == TextureWrapMode.Repeat;
-            Vector4 texSize = new Vector4(texture.width, texture.height, 0.0f, 0.0f);
-
-            if (isColour)
+            if (!RenderStylized(texture, refRTDst, texture.width, texture.height, texture.mipmapCount,
+                isNormalMap, isSpecMetallic,
+                textureImporter.wrapMode == TextureWrapMode.Repeat, srgbEncode, assetPath))
             {
-                // Apply 'painterly' filter
-                NKLIAssetStylizer.ReportSubStage("Painterly pass");
-                materialPaint.SetFloat("_TimeX", 10);
-                materialPaint.SetFloat("_Far", 0.5f);
-                materialPaint.SetFloat("_Near", 0.0f);
-                materialPaint.SetFloat("_Visualize", 0);
-                materialPaint.SetFloat("_FarCamera", 1.0f);
-                // Negative sentinel: bypasses the shader's depth path (see the
-                // NKLI note in the shader), which otherwise samples a stale
-                // scene depth texture mid-import
-                materialPaint.SetFloat("_FixDistance", -1.0f);
-                materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
-                materialPaint.SetVector("_ScreenResolution", new Vector4(texture.width, texture.height, 0.0f, 0.0f));
-                Graphics.Blit(refRTSrc, refRTInt, materialPaint);
-
-                // Sobel edge guard: restore source detail where the paint would
-                // smear strong colour or luma edges
-                materialMux.SetVector("_TexSize", texSize);
-                materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-                materialMux.SetFloat("_EdgeLo", effectEdgeLo);
-                materialMux.SetFloat("_EdgeHi", effectEdgeHi);
-                materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
-                materialMux.SetTexture("_PaintTex", refRTInt);
-                Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
-            }
-            else
-            {
-                // Normal and spec/metallic maps stay unpainted, but still pass
-                // through one copy blit so the composite's bound layers share
-                // the painted branch's blit generation and stay row-aligned
-                Graphics.Blit(refRTSrc, refRTIntPaint);
+                RenderTexture.ReleaseTemporary(refRTDst);
+                Debug.LogWarning("Somnia Fracta: effect shaders unavailable during this import; texture left unstylized: " + assetPath +
+                    ". Run 'NKLI/Bulk Stylize Assets/Somnia-Fracta' once the import completes.");
+                return;
             }
 
-            // Seed the Julia constant from the containing folder, so every map
-            // of one asset shares a mask and every folder is a unique variation
-            string seedPath = System.IO.Path.GetDirectoryName(assetPath).ToLower().Replace('\\', '/');
-            uint seed = HashPath(seedPath);
-            Vector2 juliaConstant = juliaFamily[(int)(seed % (uint)juliaFamily.Length)];
-            juliaConstant.x += (((seed >> 3) & 0xFFu) / 255.0f - 0.5f) * 0.03f;
-            juliaConstant.y += (((seed >> 11) & 0xFFu) / 255.0f - 0.5f) * 0.03f;
-            Vector4 juliaC = new Vector4(juliaConstant.x, juliaConstant.y,
-                ((seed >> 19) & 0xFFu) / 255.0f, ((seed >> 24) & 0xFFu) / 255.0f);
-            float juliaRotation = ((seed * 2654435761u) & 0xFFFFu) / 65535.0f * Mathf.PI * 2.0f;
-
-            RenderTexture refRTGraded;
-
-            if (isColour)
-            {
-                // Deeper painterly pass for the regions the crystal leaves
-                // untouched, through the same edge guard
-                NKLIAssetStylizer.ReportSubStage("Painterly pass (deep)");
-                materialPaint.SetFloat("_LightIntensity", effectStrengthPainterlyMax);
-                Graphics.Blit(refRTSrc, refRTInt, materialPaint);
-                materialMux.SetTexture("_PaintTex", refRTInt);
-                Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialMux, 2);
-            }
-
-            // Apply triangular facet filter. Colour maps take the full fill
-            // drift; spec/metallic maps a luminance-only whisper; normal maps a
-            // gentle per-facet tilt — all on the same lattice and gasket hashes
-            // so every layer catches the light in step
-            NKLIAssetStylizer.ReportSubStage("Triangular facets");
-            materialFacet.SetVector("_TexSize", texSize);
-            materialFacet.SetFloat("_Density", effectFacetDensity);
-            materialFacet.SetFloat("_Jitter", isColour ? effectFacetJitter : (isSpecMetallic ? effectSpecMetJitter : 0.0f));
-            materialFacet.SetFloat("_HueJitter", isColour ? effectFacetHueJitter : 0.0f);
-            materialFacet.SetFloat("_SatJitter", isColour ? effectFacetSatJitter : 0.0f);
-            materialFacet.SetFloat("_FractalChance", effectFractalChance);
-            materialFacet.SetFloat("_FractalShade", isColour ? effectFractalShade : (isSpecMetallic ? effectSpecMetFractalShade : 0.0f));
-            materialFacet.SetFloat("_NormalPerturb", isNormalMap ? effectNormalPerturb : 0.0f);
-            materialFacet.SetFloat("_LatticeWarp", effectLatticeWarp);
-            materialFacet.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-            Graphics.Blit(refRTSrc, refRTIntFacet, materialFacet);
-
-            // Render the Julia crystallization mask, then mip-blur it so
-            // crystal and paint trade places across wide, gentle borders
-            NKLIAssetStylizer.ReportSubStage("Julia crystallization");
-            materialMux.SetVector("_JuliaC", juliaC);
-            materialMux.SetVector("_TexSize", texSize);
-            materialMux.SetFloat("_JuliaZoom", effectJuliaZoom);
-            materialMux.SetFloat("_JuliaRot", juliaRotation);
-            materialMux.SetFloat("_JuliaWarp", effectJuliaWarp);
-            materialMux.SetFloat("_Filigree", effectFiligree);
-            materialMux.SetFloat("_Pool", effectPool);
-            materialMux.SetFloat("_MaskNoise", effectMaskNoise);
-            materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-            refRTMask.filterMode = FilterMode.Trilinear;
-            Graphics.Blit(refRTSrc, refRTMask, materialMux, 0);
-            refRTMask.GenerateMips();
-
-            // Composite the base and facets through the softened mask. Colour
-            // maps blend between the two paint strengths; spec/metallic and
-            // normal maps blend facets over their untouched source copy
-            RenderTexture refRTBase = refRTIntPaint;
-            materialMux.SetTexture("_PaintTex", refRTBase);
-            materialMux.SetTexture("_PaintStrongTex", isColour ? refRTIntPaintStrong : refRTBase);
-            materialMux.SetTexture("_FacetTex", refRTIntFacet);
-            materialMux.SetTexture("_MaskTex", refRTMask);
-            materialMux.SetFloat("_MaskLo", effectMaskLo);
-            materialMux.SetFloat("_MaskHi", effectMaskHi);
-            materialMux.SetFloat("_MaskBlur", effectMaskBlur);
-            materialMux.SetFloat("_MaskSoften", effectMaskSoften);
-            materialMux.SetFloat("_CrystalMax", effectCrystalMax);
-            materialMux.SetFloat("_GuardLo", effectGuardLo);
-            materialMux.SetFloat("_GuardHi", effectGuardHi);
-            Graphics.Blit(refRTSrc, refRTInt, materialMux, 1);
-
-            if (isColour)
-            {
-                // Gloaming grade; glow samples the mip chain
-                NKLIAssetStylizer.ReportSubStage("Gloaming grade");
-                refRTInt.filterMode = FilterMode.Trilinear;
-                refRTInt.GenerateMips();
-                materialGrade.SetFloat("_GlowAmount", effectGlowAmount);
-                materialGrade.SetFloat("_GlowMip", effectGlowMip);
-                materialGrade.SetFloat("_Lift", effectLift);
-                materialGrade.SetColor("_LiftColor", effectLiftColor);
-                materialGrade.SetColor("_ShadowTint", effectShadowTint);
-                materialGrade.SetColor("_HighlightTint", effectHighlightTint);
-                materialGrade.SetFloat("_Vibrance", effectVibrance);
-                Graphics.Blit(refRTInt, refRTGrade, materialGrade);
-                refRTGraded = refRTGrade;
-            }
-            else
-                refRTGraded = refRTInt;
-
-            // Re-encode only what the initial sample decoded: sRGB-flagged
-            // textures in a linear-colour-space project. Gamma-space projects
-            // sample raw, so their pixels round-trip without conversion
-            if (!isNormalMap && textureImporter.sRGBTexture && PlayerSettings.colorSpace == ColorSpace.Linear)
-            {
-                Graphics.Blit(refRTGraded, refRTDst, materialGamma);
-            }
-            else
-                Graphics.Blit(refRTGraded, refRTDst, materialFlip);
+            // Allocate Native Arrays
+            NKLITextureProcessorArrayStorage.AllocateResources();
 
 
             // Only the base level is read back from the GPU; the lower mips
@@ -736,10 +616,12 @@ public class NKLITextureProcessor : AssetPostprocessor
                     Color[] processed = intTex.GetPixels(0);
                     Color[] original = texture.GetPixels(0);
 
-                    // The chain's net row order follows graphics-API blit
-                    // conventions; measure which orientation correlates with
-                    // the source and correct in place, so bakes land upright
-                    // on every backend
+                    // Safety net for exotic backends: measure which orientation
+                    // correlates with the source and correct only on DECISIVE
+                    // evidence. Per-channel comparison, not luma: a normal
+                    // map's structure lives in its R/G slope channels while its
+                    // luma is nearly flat, and a luma metric there lets noise
+                    // cast the deciding vote and mirror good bakes
                     float diffStraight = 0.0f;
                     float diffFlipped = 0.0f;
                     int stride = Mathf.Max(1, (width * height) / 16384);
@@ -747,11 +629,13 @@ public class NKLITextureProcessor : AssetPostprocessor
                     {
                         int row = p / width;
                         int pf = (height - 1 - row) * width + (p - row * width);
-                        float lo = original[p].r * 0.299f + original[p].g * 0.587f + original[p].b * 0.114f;
-                        diffStraight += Mathf.Abs(processed[p].r * 0.299f + processed[p].g * 0.587f + processed[p].b * 0.114f - lo);
-                        diffFlipped += Mathf.Abs(processed[pf].r * 0.299f + processed[pf].g * 0.587f + processed[pf].b * 0.114f - lo);
+                        Color o = original[p];
+                        Color cs = processed[p];
+                        Color cf = processed[pf];
+                        diffStraight += Mathf.Abs(cs.r - o.r) + Mathf.Abs(cs.g - o.g) + Mathf.Abs(cs.b - o.b);
+                        diffFlipped += Mathf.Abs(cf.r - o.r) + Mathf.Abs(cf.g - o.g) + Mathf.Abs(cf.b - o.b);
                     }
-                    if (diffFlipped < diffStraight)
+                    if (diffFlipped < diffStraight * 0.8f)
                     {
                         Color[] flipped = new Color[processed.Length];
                         for (int row = 0; row < height; row++)
@@ -759,8 +643,12 @@ public class NKLITextureProcessor : AssetPostprocessor
                         processed = flipped;
                     }
 
-                    for (int p = 0; p < processed.Length; p++)
-                        processed[p].a = original[p].a;
+                    // Spec/metallic maps keep their processed alpha so the
+                    // facet sparkle can live in smoothness; every other class
+                    // splices the original alpha back bit-for-bit
+                    if (!isSpecMetallic)
+                        for (int p = 0; p < processed.Length; p++)
+                            processed[p].a = original[p].a;
                     texture.SetPixels(processed, 0);
 
                     // Box-filter the corrected base down the whole chain,
@@ -787,7 +675,46 @@ public class NKLITextureProcessor : AssetPostprocessor
                                     prev[y1 * pw + x0] + prev[y1 * pw + x1]) * 0.25f;
                             }
                         }
-                        texture.SetPixels(level, m);
+                        // Unsharp the RGB so the crystalline character stays
+                        // legible at distance; alpha keeps the plain box
+                        // average and normal maps are left untouched. Deeper
+                        // mips cascade from the unsharpened box, so the
+                        // sharpening never compounds
+                        Color[] toStore = level;
+                        if (!isNormalMap && effectMipSharpen > 0.0f && mw >= 4 && mh >= 4)
+                        {
+                            Color[] sharp = new Color[mw * mh];
+                            for (int y = 0; y < mh; y++)
+                            {
+                                for (int x = 0; x < mw; x++)
+                                {
+                                    float br = 0.0f;
+                                    float bg = 0.0f;
+                                    float bb = 0.0f;
+                                    for (int oy = -1; oy <= 1; oy++)
+                                    {
+                                        int sy = Mathf.Clamp(y + oy, 0, mh - 1);
+                                        for (int ox = -1; ox <= 1; ox++)
+                                        {
+                                            int sx = Mathf.Clamp(x + ox, 0, mw - 1);
+                                            Color c = level[sy * mw + sx];
+                                            br += c.r;
+                                            bg += c.g;
+                                            bb += c.b;
+                                        }
+                                    }
+                                    Color p0 = level[y * mw + x];
+                                    sharp[y * mw + x] = new Color(
+                                        Mathf.Clamp01(p0.r + (p0.r - br / 9.0f) * effectMipSharpen),
+                                        Mathf.Clamp01(p0.g + (p0.g - bg / 9.0f) * effectMipSharpen),
+                                        Mathf.Clamp01(p0.b + (p0.b - bb / 9.0f) * effectMipSharpen),
+                                        p0.a);
+                                }
+                            }
+                            toStore = sharp;
+                        }
+
+                        texture.SetPixels(toStore, m);
                         prev = level;
                         pw = mw;
                         ph = mh;
@@ -800,18 +727,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             }
 
 
-            // Clean up
-            RenderTexture.active = RTActive;
-            RTActive = null;
-
-            RenderTexture.ReleaseTemporary(refRTSrc);
             RenderTexture.ReleaseTemporary(refRTDst);
-            RenderTexture.ReleaseTemporary(refRTInt);
-            RenderTexture.ReleaseTemporary(refRTIntFacet);
-            RenderTexture.ReleaseTemporary(refRTMask);
-            RenderTexture.ReleaseTemporary(refRTIntPaint);
-            RenderTexture.ReleaseTemporary(refRTIntPaintStrong);
-            RenderTexture.ReleaseTemporary(refRTGrade);
 
             if (readbackFailed)
             {
@@ -827,5 +743,272 @@ public class NKLITextureProcessor : AssetPostprocessor
             if (!NKLIAssetStylizer.bulkRunActive)
                 NKLITextureProcessorArrayStorage.ReleaseResources();
         }
+    }
+
+    // Diagnostic hook: when set, each chain stage is handed over for dumping
+    public static System.Action<RenderTexture, string> diagDump;
+
+    // The one descriptor for every RT in and around the chain. The blit
+    // orientation convention follows the destination's descriptor, so dest
+    // MUST be allocated from this and nothing else — a plain temporary
+    // flips the final image
+    public static RenderTextureDescriptor ChainDescriptor(int width, int height, int mipCount)
+    {
+        rtDesc.width = width;
+        rtDesc.height = height;
+        rtDesc.mipCount = mipCount;
+        return rtDesc;
+    }
+
+    // Renders the full stylization chain for one texture into dest (mip 0).
+    // Shared by the import postprocessor and the preview window, so the two
+    // can never drift apart. Returns false if the effect shaders are missing
+    public static bool RenderStylized(Texture source, RenderTexture dest, int texWidth, int texHeight, int mipCount,
+        bool isNormalMap, bool isSpecMetallic, bool wraps, bool srgbEncode, string assetPath)
+    {
+        if (!EnsureShaders())
+            return false;
+
+        RenderTexture RTActive = RenderTexture.active;
+
+        rtDesc.width = texWidth;
+        rtDesc.height = texHeight;
+        rtDesc.mipCount = mipCount;
+        RenderTexture refRTSrc = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTInt = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTIntFacet = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTMask = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTIntPaint = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTIntPaintStrong = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTGrade = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTFlow = RenderTexture.GetTemporary(rtDesc);
+        RenderTexture refRTStroke = RenderTexture.GetTemporary(rtDesc);
+
+        // Explicit wrap mode on every chain RT: tiling textures need the
+        // mip-footprint samples of paint, facet, mask blur and glow to wrap at
+        // the borders — and pooled temporaries otherwise carry whatever wrap
+        // state their previous user left behind
+        TextureWrapMode rtWrap = wraps ? TextureWrapMode.Repeat : TextureWrapMode.Clamp;
+        refRTSrc.wrapMode = rtWrap;
+        refRTInt.wrapMode = rtWrap;
+        refRTIntFacet.wrapMode = rtWrap;
+        refRTMask.wrapMode = rtWrap;
+        refRTIntPaint.wrapMode = rtWrap;
+        refRTIntPaintStrong.wrapMode = rtWrap;
+        refRTGrade.wrapMode = rtWrap;
+        refRTFlow.wrapMode = rtWrap;
+        refRTStroke.wrapMode = rtWrap;
+
+        // Material blit, never a bare one: a material-less Blit picks internal
+        // copy-versus-draw paths whose row conventions differ with the
+        // source's format and colour space, flipping some texture classes and
+        // not others. A material draw is one deterministic convention for all
+        Graphics.Blit(source, refRTSrc, materialFlip);
+        refRTSrc.filterMode = FilterMode.Trilinear;
+        refRTSrc.GenerateMips();
+
+        bool isColour = !isNormalMap && !isSpecMetallic;
+        Vector4 texSize = new Vector4(texWidth, texHeight, 0.0f, 0.0f);
+
+        if (isColour)
+        {
+            // Apply 'painterly' filter
+            NKLIAssetStylizer.ReportSubStage("Painterly pass");
+            materialPaint.SetFloat("_TimeX", 10);
+            materialPaint.SetFloat("_Far", 0.5f);
+            materialPaint.SetFloat("_Near", 0.0f);
+            materialPaint.SetFloat("_Visualize", 0);
+            materialPaint.SetFloat("_FarCamera", 1.0f);
+            // Negative sentinel: bypasses the shader's depth path (see the
+            // NKLI note in the shader), which otherwise samples a stale
+            // scene depth texture mid-import
+            materialPaint.SetFloat("_FixDistance", -1.0f);
+            materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
+            materialPaint.SetVector("_ScreenResolution", texSize);
+            Graphics.Blit(refRTSrc, refRTInt, materialPaint);
+
+            // Flow field from the source's own gradients; the stroke pass then
+            // smears the paint along it, following grain and contour
+            NKLIAssetStylizer.ReportSubStage("Flow strokes");
+            materialFlow.SetVector("_TexSize", texSize);
+            materialFlow.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+            materialFlow.SetFloat("_FlowMip", effectFlowMip);
+            Graphics.Blit(refRTSrc, refRTFlow, materialFlow, 0);
+
+            materialFlow.SetTexture("_FlowTex", refRTFlow);
+            materialFlow.SetFloat("_StrokeLength", effectStrokeLength);
+            Graphics.Blit(refRTInt, refRTStroke, materialFlow, 1);
+
+            // Sobel edge guard: restore source detail where the paint would
+            // smear strong colour or luma edges
+            materialMux.SetVector("_TexSize", texSize);
+            materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+            materialMux.SetFloat("_EdgeLo", effectEdgeLo);
+            materialMux.SetFloat("_EdgeHi", effectEdgeHi);
+            materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
+            materialMux.SetTexture("_PaintTex", refRTStroke);
+            Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
+
+            if (diagDump != null)
+            {
+                diagDump(refRTInt, "d_paint");
+                diagDump(refRTFlow, "d_flow");
+                diagDump(refRTStroke, "d_stroke");
+                diagDump(refRTIntPaint, "d_sobel");
+            }
+        }
+        else
+        {
+            // Normal and spec/metallic maps stay unpainted, but still pass
+            // through one copy blit so the composite's bound layers share the
+            // painted branch's blit generation and stay row-aligned. The copy
+            // MUST go through a material: a material-less Blit copies without
+            // the row inversion every material blit applies, leaving this
+            // layer a generation adrift and part-mirroring the composite
+            Graphics.Blit(refRTSrc, refRTIntPaint, materialFlip);
+        }
+
+        if (diagDump != null)
+        {
+            diagDump(refRTSrc, "e_src");
+            diagDump(refRTIntPaint, "e_base");
+        }
+
+        // Seed the Julia constant from the containing folder, so every map
+        // of one asset shares a mask and every folder is a unique variation
+        string seedPath = System.IO.Path.GetDirectoryName(assetPath).ToLower().Replace('\\', '/');
+        uint seed = HashPath(seedPath);
+        Vector2 juliaConstant = juliaFamily[(int)(seed % (uint)juliaFamily.Length)];
+        juliaConstant.x += (((seed >> 3) & 0xFFu) / 255.0f - 0.5f) * 0.03f;
+        juliaConstant.y += (((seed >> 11) & 0xFFu) / 255.0f - 0.5f) * 0.03f;
+        Vector4 juliaC = new Vector4(juliaConstant.x, juliaConstant.y,
+            ((seed >> 19) & 0xFFu) / 255.0f, ((seed >> 24) & 0xFFu) / 255.0f);
+        float juliaRotation = ((seed * 2654435761u) & 0xFFFFu) / 65535.0f * Mathf.PI * 2.0f;
+
+        RenderTexture refRTGraded;
+
+        if (isColour)
+        {
+            // Deeper painterly pass for the regions the crystal leaves
+            // untouched, with longer strokes, through the same edge guard
+            NKLIAssetStylizer.ReportSubStage("Painterly pass (deep)");
+            materialPaint.SetFloat("_LightIntensity", effectStrengthPainterlyMax);
+            Graphics.Blit(refRTSrc, refRTInt, materialPaint);
+            materialFlow.SetFloat("_StrokeLength", effectStrokeLengthDeep);
+            Graphics.Blit(refRTInt, refRTStroke, materialFlow, 1);
+            materialMux.SetTexture("_PaintTex", refRTStroke);
+            Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialMux, 2);
+        }
+
+        // Apply triangular facet filter. Colour maps take the full fill
+        // drift; spec/metallic maps a luminance-only whisper; normal maps a
+        // gentle per-facet tilt — all on the same lattice and gasket hashes
+        // so every layer catches the light in step
+        NKLIAssetStylizer.ReportSubStage("Triangular facets");
+        materialFacet.SetVector("_TexSize", texSize);
+        materialFacet.SetFloat("_Density", effectFacetDensity);
+        materialFacet.SetFloat("_Jitter", isColour ? effectFacetJitter : (isSpecMetallic ? effectSpecMetJitter : 0.0f));
+        materialFacet.SetFloat("_HueJitter", isColour ? effectFacetHueJitter : 0.0f);
+        materialFacet.SetFloat("_SatJitter", isColour ? effectFacetSatJitter : 0.0f);
+        materialFacet.SetFloat("_FractalChance", effectFractalChance);
+        materialFacet.SetFloat("_FractalShade", isColour ? effectFractalShade : (isSpecMetallic ? effectSpecMetFractalShade : 0.0f));
+        materialFacet.SetFloat("_NormalPerturb", isNormalMap ? effectNormalPerturb : 0.0f);
+        materialFacet.SetFloat("_LatticeWarp", effectLatticeWarp);
+        materialFacet.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+        materialFacet.SetFloat("_Dispersion", isColour ? effectDispersion : 0.0f);
+        materialFacet.SetFloat("_SparkleChance", isSpecMetallic ? effectSparkleChance : 0.0f);
+        materialFacet.SetFloat("_SparkleAmount", effectSparkleAmount);
+        Graphics.Blit(refRTSrc, refRTIntFacet, materialFacet);
+
+        // Render the Julia crystallization mask, then mip-blur it so
+        // crystal and paint trade places across wide, gentle borders
+        NKLIAssetStylizer.ReportSubStage("Julia crystallization");
+        materialMux.SetVector("_JuliaC", juliaC);
+        materialMux.SetVector("_TexSize", texSize);
+        materialMux.SetFloat("_JuliaZoom", effectJuliaZoom);
+        materialMux.SetFloat("_JuliaRot", juliaRotation);
+        materialMux.SetFloat("_JuliaWarp", effectJuliaWarp);
+        materialMux.SetFloat("_Filigree", effectFiligree);
+        materialMux.SetFloat("_Pool", effectPool);
+        materialMux.SetFloat("_MaskNoise", effectMaskNoise);
+        materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+        refRTMask.filterMode = FilterMode.Trilinear;
+        Graphics.Blit(refRTSrc, refRTMask, materialMux, 0);
+        refRTMask.GenerateMips();
+
+        // Composite the base and facets through the softened mask. Colour
+        // maps blend between the two paint strengths; spec/metallic and
+        // normal maps blend facets over their untouched source copy
+        RenderTexture refRTBase = refRTIntPaint;
+        materialMux.SetTexture("_PaintTex", refRTBase);
+        materialMux.SetTexture("_PaintStrongTex", isColour ? refRTIntPaintStrong : refRTBase);
+        materialMux.SetTexture("_FacetTex", refRTIntFacet);
+        materialMux.SetTexture("_MaskTex", refRTMask);
+        materialMux.SetFloat("_MaskLo", effectMaskLo);
+        materialMux.SetFloat("_MaskHi", effectMaskHi);
+        materialMux.SetFloat("_MaskBlur", effectMaskBlur);
+        materialMux.SetFloat("_MaskSoften", effectMaskSoften);
+        materialMux.SetFloat("_CrystalMax", effectCrystalMax);
+        materialMux.SetFloat("_GuardLo", effectGuardLo);
+        materialMux.SetFloat("_GuardHi", effectGuardHi);
+        Graphics.Blit(refRTSrc, refRTInt, materialMux, 1);
+
+        if (diagDump != null)
+        {
+            diagDump(refRTIntFacet, "e_facet");
+            diagDump(refRTInt, "e_mux");
+        }
+
+        if (isColour)
+        {
+            // Gloaming grade; glow samples the mip chain
+            NKLIAssetStylizer.ReportSubStage("Gloaming grade");
+            refRTInt.filterMode = FilterMode.Trilinear;
+            refRTInt.GenerateMips();
+            materialGrade.SetFloat("_GlowAmount", effectGlowAmount);
+            materialGrade.SetFloat("_GlowMip", effectGlowMip);
+            materialGrade.SetFloat("_Lift", effectLift);
+            materialGrade.SetColor("_LiftColor", effectLiftColor);
+            materialGrade.SetColor("_ShadowTint", effectShadowTint);
+            materialGrade.SetColor("_HighlightTint", effectHighlightTint);
+            materialGrade.SetFloat("_Vibrance", effectVibrance);
+            Graphics.Blit(refRTInt, refRTGrade, materialGrade);
+            refRTGraded = refRTGrade;
+        }
+        else
+        {
+            // Ungraded classes take an equalizing copy so both paths reach the
+            // final blit at the same generation; skipping it lands spec and
+            // normal maps one row-inversion adrift of the colour maps
+            Graphics.Blit(refRTInt, refRTGrade, materialFlip);
+            refRTGraded = refRTGrade;
+        }
+
+        if (diagDump != null)
+            diagDump(refRTGraded, "e_graded");
+
+        // Re-encode only what the initial sample decoded: sRGB-flagged
+        // textures in a linear-colour-space project. Gamma-space projects
+        // sample raw, so their pixels round-trip without conversion
+        if (srgbEncode)
+        {
+            Graphics.Blit(refRTGraded, dest, materialGamma);
+        }
+        else
+            Graphics.Blit(refRTGraded, dest, materialFlip);
+
+        RenderTexture.active = RTActive;
+
+        RenderTexture.ReleaseTemporary(refRTSrc);
+        RenderTexture.ReleaseTemporary(refRTInt);
+        RenderTexture.ReleaseTemporary(refRTIntFacet);
+        RenderTexture.ReleaseTemporary(refRTMask);
+        RenderTexture.ReleaseTemporary(refRTIntPaint);
+        RenderTexture.ReleaseTemporary(refRTIntPaintStrong);
+        RenderTexture.ReleaseTemporary(refRTGrade);
+        RenderTexture.ReleaseTemporary(refRTFlow);
+        RenderTexture.ReleaseTemporary(refRTStroke);
+
+        return true;
     }
 }

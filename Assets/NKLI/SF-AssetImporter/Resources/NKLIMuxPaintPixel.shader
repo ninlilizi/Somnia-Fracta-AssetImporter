@@ -196,7 +196,12 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 float4 paint = lerp(tex2D(_PaintStrongTex, i.uv), paintBase, crystal);
 
                 float4 col = lerp(paint, facet, crystal);
-                col.a = tex2D(_MainTex, i.uv).a;
+                // Alpha from the generation-aligned bound layers, NOT
+                // _MainTex: the blit source is one generation behind them, so
+                // its alpha would land upside-down relative to the colour.
+                // Crystal zones take the facet alpha, which carries the
+                // spec/metallic sparkle spikes
+                col.a = lerp(paintBase.a, facet.a, crystal);
                 return col;
             }
             ENDCG
@@ -246,10 +251,11 @@ Shader "Hidden/NKLIMuxPaintPixel"
 
                 float keep = smoothstep(_EdgeLo, _EdgeHi, edge) * _EdgeKeep;
 
-                // The bound paint sits one blit generation from the source and
-                // so carries inverted rows; sample it flipped to realign, or
-                // the blend ghosts the two orientations together
-                float4 paint = tex2Dlod(_PaintTex, float4(i.uv.x, 1.0 - i.uv.y, 0.0, 0.0));
+                // The bound paint is two blit generations from the source
+                // (paint, then flow stroke), so its rows arrive realigned and
+                // are sampled straight. Every blit inverts rows: adding or
+                // removing a generation upstream must flip this sampling
+                float4 paint = tex2Dlod(_PaintTex, float4(i.uv, 0.0, 0.0));
                 float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
                 return lerp(paint, src, keep);
             }

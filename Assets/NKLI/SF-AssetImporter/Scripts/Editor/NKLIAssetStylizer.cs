@@ -420,7 +420,7 @@ public class NKLIAssetStylizer : MonoBehaviour
     }
 
 
-    [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta")]
+    [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta - Apply")]
     public static void DoStylize()
     {
         bulkRunActive = true;

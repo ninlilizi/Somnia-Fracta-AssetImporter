@@ -49,6 +49,9 @@ Shader "Hidden/NKLITriangleFacet"
             float _NormalPerturb;
             float _LatticeWarp;
             float _Wrap;
+            float _Dispersion;
+            float _SparkleChance;
+            float _SparkleAmount;
 
             float hash21(float2 p)
             {
@@ -123,6 +126,20 @@ Shader "Hidden/NKLITriangleFacet"
                 float2 f = s - cell;
                 float upper = step(1.0, f.x + f.y);
 
+                // Canonical cell index under the lattice's wrap translations
+                // (x-wrap shifts skewed cells by _Density; y-wrap by
+                // (-rows/2, rows), integral because rows is even), so every
+                // hash agrees exactly on both sides of a seam
+                float2 cellId = cell;
+                if (_Wrap > 0.5)
+                {
+                    float wy = floor(cellId.y / rows);
+                    cellId.y -= wy * rows;
+                    cellId.x += wy * rows * 0.5;
+                    cellId.x -= floor(cellId.x / _Density) * _Density;
+                }
+                float2 hp = cellId * 0.618034 + upper * 17.71;
+
                 float2 facetS = cell + lerp(float2(1.0, 1.0) / 3.0, float2(2.0, 2.0) / 3.0, upper);
                 float2 facetP = mul(fromSkewed, facetS);
                 float2 facetUV = float2(facetP.x / _Density, facetP.y / (rows * 0.8660254));
@@ -136,10 +153,10 @@ Shader "Hidden/NKLITriangleFacet"
                 float facetMip = log2(_TexSize.x / _Density) - 0.5;
                 float4 col = tex2Dlod(_MainTex, float4(facetUV, 0.0, facetMip));
 
-                float h1 = hash21(facetUV * 289.0);
-                float h2 = hash21(facetUV * 289.0 + 17.31);
-                float h3 = hash21(facetUV * 289.0 + 41.17);
-                float h4 = hash21(facetUV * 289.0 + 71.3);
+                float h1 = hash21(hp);
+                float h2 = hash21(hp + 17.31);
+                float h3 = hash21(hp + 41.17);
+                float h4 = hash21(hp + 71.3);
 
                 // A minority of facets subdivide into Sierpinski gaskets: fold
                 // the cell coordinates through three generations; a point that
@@ -172,6 +189,19 @@ Shader "Hidden/NKLITriangleFacet"
                     return float4(normalize(n) * 0.5 + 0.5, col.a);
                 }
 
+                // Prismatic dispersion: split R and B along each facet's
+                // hashed direction, as light refracting through cut crystal
+                if (_Dispersion > 0.0)
+                {
+                    float2 ddir = float2(h1, h2) - 0.5;
+                    ddir /= max(length(ddir), 1.0e-4);
+                    float2 doff = ddir * _Dispersion / _TexSize.xy;
+                    float2 uvR = _Wrap > 0.5 ? frac(facetUV + doff) : saturate(facetUV + doff);
+                    float2 uvB = _Wrap > 0.5 ? frac(facetUV - doff) : saturate(facetUV - doff);
+                    col.r = tex2Dlod(_MainTex, float4(uvR, 0.0, facetMip)).r;
+                    col.b = tex2Dlod(_MainTex, float4(uvB, 0.0, facetMip)).b;
+                }
+
                 // Colour maps: fills drift in hue, saturation and luminance.
                 // Hue rotates the existing colour, saturation scales it (greys
                 // stay grey), luminance scales it (blacks stay black); gasket
@@ -184,9 +214,14 @@ Shader "Hidden/NKLITriangleFacet"
 
                 if (holeDepth > 0.0)
                 {
-                    float dir = hash21(facetUV * 289.0 + 113.7) < 0.5 ? -1.0 : 1.0;
+                    float dir = hash21(hp + 113.7) < 0.5 ? -1.0 : 1.0;
                     col.rgb *= 1.0 + dir * _FractalShade / holeDepth;
                 }
+
+                // Sparkle: a sparse hashed minority of facets spike their
+                // smoothness (alpha) so crystal zones glint as the view moves
+                if (_SparkleChance > 0.0 && hash21(hp + 157.9) < _SparkleChance)
+                    col.a = saturate(col.a + _SparkleAmount * (0.5 + 0.5 * hash21(hp + 211.3)));
 
                 return col;
             }

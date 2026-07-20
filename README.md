@@ -4,6 +4,10 @@ Somnia Fracta — a Unity editor import filter that bakes a painterly/fractal st
 
 This is intended for use in my own games, however it shows off how to perform some cool tricks, so sharing for the educational value.
 
+[![In-engine scene with stylized textures: triangular facet mosaic and Sierpinski gasket detail across the walls, painterly grade throughout](Images/example.png)](Images/example.png)
+
+*Stylized textures in-engine — faceted walls with gasket detail, painterly surfaces, gloaming grade.*
+
 ## Effect
 
 - **Painterly base** — Kuwahara oil-paint filtering, deepening where the crystal effect recedes.

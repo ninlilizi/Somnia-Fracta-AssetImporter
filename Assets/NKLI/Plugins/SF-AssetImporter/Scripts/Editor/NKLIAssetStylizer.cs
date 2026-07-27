@@ -38,6 +38,7 @@ public class NKLIAssetStylizer : MonoBehaviour
 
     const string dependencyHashFile = "Library/NKLI-SomniaFracta.dep";
     const string specMetCacheFile = "Library/NKLI-SomniaFracta-specmet.txt";
+    const string stylizedLedgerFile = "Library/NKLI-SomniaFracta-stylized.txt";
 
     // Material texture slots treated as specular/metallic maps
     static readonly string[] specMetProperties = { "_MetallicGlossMap", "_SpecGlossMap" };
@@ -64,6 +65,19 @@ public class NKLIAssetStylizer : MonoBehaviour
     public static bool IsOcclusion(string path)
     {
         return occlusionTextures.Contains(AssetDatabase.AssetPathToGUID(path));
+    }
+
+    // Would this texture import untouched? Occlusion and name-excluded roles
+    // pass through pristine, as do importer types outside Default/NormalMap
+    static bool ImportsPristine(string path)
+    {
+        if (IsNameExcluded(path) || IsOcclusion(path))
+            return true;
+
+        TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;
+        return importer == null ||
+            (importer.textureType != TextureImporterType.Default &&
+             importer.textureType != TextureImporterType.NormalMap);
     }
 
     // Contains-tokens are case-sensitive, so "AO" cannot ambush the "ao"
@@ -105,6 +119,7 @@ public class NKLIAssetStylizer : MonoBehaviour
                     Hash128.Parse(System.IO.File.ReadAllText(dependencyHashFile)));
 
             LoadClassificationDb();
+            LoadStylizedLedger();
             RegisterClassDependencies();
         }
         catch (Exception e)
@@ -118,6 +133,102 @@ public class NKLIAssetStylizer : MonoBehaviour
         Hash128 hash = Hash128.Compute(NKLITextureProcessor.EffectFingerprint());
         AssetDatabase.RegisterCustomDependency(dependencyName, hash);
         System.IO.File.WriteAllText(dependencyHashFile, hash.ToString());
+    }
+
+    // Ledger of textures whose committed artifact is stylized, and under which
+    // settings fingerprint, so incremental bulk runs pass over finished work.
+    // Kept in Library/ deliberately: a Library rebuild that voids every
+    // artifact voids the ledger with it
+    static readonly Dictionary<string, string> stylizedLedger = new Dictionary<string, string>();
+    static readonly HashSet<string> ledgerTouchedThisBatch = new HashSet<string>();
+
+    static string CurrentFingerprintHash()
+    {
+        return Hash128.Compute(NKLITextureProcessor.EffectFingerprint()).ToString();
+    }
+
+    static void LoadStylizedLedger()
+    {
+        stylizedLedger.Clear();
+        if (!System.IO.File.Exists(stylizedLedgerFile))
+            return;
+
+        foreach (string line in System.IO.File.ReadAllLines(stylizedLedgerFile))
+        {
+            string[] parts = line.Split('|');
+            if (parts.Length == 2)
+                stylizedLedger[parts[0]] = parts[1];
+        }
+    }
+
+    static void SaveStylizedLedger()
+    {
+        List<string> lines = new List<string>();
+        foreach (KeyValuePair<string, string> entry in stylizedLedger)
+            lines.Add(entry.Key + "|" + entry.Value);
+        lines.Sort(StringComparer.Ordinal);
+        System.IO.File.WriteAllLines(stylizedLedgerFile, lines.ToArray());
+    }
+
+    // Both recorders are called by the texture postprocessor on every import of
+    // a marked texture, so the ledger tracks the committed artifact exactly.
+    // Worker processes must not write: their ledger copy would race the main
+    // editor's file; ReconcileLedger settles their imports instead
+    public static void RecordStylized(string assetPath)
+    {
+        if (AssetDatabase.IsAssetImportWorkerProcess())
+            return;
+
+        ledgerTouchedThisBatch.Add(assetPath);
+        string guid = AssetDatabase.AssetPathToGUID(assetPath);
+        if (string.IsNullOrEmpty(guid))
+            return;
+
+        string hash = CurrentFingerprintHash();
+        string existing;
+        if (stylizedLedger.TryGetValue(guid, out existing) && existing == hash)
+            return;
+        stylizedLedger[guid] = hash;
+        SaveStylizedLedger();
+    }
+
+    public static void RecordUnstylized(string assetPath)
+    {
+        if (AssetDatabase.IsAssetImportWorkerProcess())
+            return;
+
+        ledgerTouchedThisBatch.Add(assetPath);
+        string guid = AssetDatabase.AssetPathToGUID(assetPath);
+        if (string.IsNullOrEmpty(guid))
+            return;
+
+        if (stylizedLedger.Remove(guid))
+            SaveStylizedLedger();
+    }
+
+    // Imports that ran in a parallel import worker never pass through the main
+    // editor's texture postprocessor, and workers always decline stylization —
+    // so any marked texture imported this batch without touching the ledger
+    // came back unstylized and forfeits its entry
+    public static void ReconcileLedger(string[] imported)
+    {
+        if (AssetDatabase.IsAssetImportWorkerProcess())
+            return;
+
+        bool changed = false;
+        foreach (string path in imported)
+        {
+            if (path.ToLower().IndexOf(targetString) == -1 || ledgerTouchedThisBatch.Contains(path))
+                continue;
+
+            string guid = AssetDatabase.AssetPathToGUID(path);
+            if (!string.IsNullOrEmpty(guid))
+                changed |= stylizedLedger.Remove(guid);
+        }
+        ledgerTouchedThisBatch.Clear();
+
+        if (changed)
+            SaveStylizedLedger();
     }
 
     // A missing fingerprint file means a fresh Library (deleted, or first run):
@@ -345,8 +456,23 @@ public class NKLIAssetStylizer : MonoBehaviour
     static int progressIndex;
     static int progressCount;
     static string progressName;
+    static string progressStage;
     static bool progressActive;
     static bool progressCancelled;
+    static NKLIStylizeAbortWindow abortWindow;
+
+    // Read by the abort window; RequestAbort is honoured at the same seams as
+    // the progress bar's cancel button — after the texture in flight
+    public static bool RunActive { get { return progressActive; } }
+    public static float RunFraction { get { return progressCount > 0 ? (float)progressIndex / progressCount : 0.0f; } }
+    public static string RunCounter { get { return progressIndex + " / " + progressCount; } }
+    public static string RunStage { get { return progressStage; } }
+    public static string RunName { get { return progressName; } }
+
+    public static void RequestAbort()
+    {
+        progressCancelled = true;
+    }
 
     static void StartRoutine(IEnumerator routine)
     {
@@ -389,6 +515,7 @@ public class NKLIAssetStylizer : MonoBehaviour
     // Progress dialogue; returns true once the user has pressed cancel
     static bool ReportStage(string stage)
     {
+        progressStage = stage;
         float progress = progressCount > 0 ? (float)progressIndex / progressCount : 0.0f;
         progressCancelled |= EditorUtility.DisplayCancelableProgressBar(
             progressTitle + " — " + stage,
@@ -403,6 +530,7 @@ public class NKLIAssetStylizer : MonoBehaviour
         if (!progressActive)
             return;
 
+        progressStage = "Stylizing — " + subStage;
         float progress = progressCount > 0 ? (float)progressIndex / progressCount : 0.0f;
         progressCancelled |= EditorUtility.DisplayCancelableProgressBar(
             progressTitle + " — Stylizing",
@@ -415,25 +543,54 @@ public class NKLIAssetStylizer : MonoBehaviour
         progressActive = false;
         bulkRunActive = false;
         EditorUtility.ClearProgressBar();
+        if (abortWindow != null)
+        {
+            abortWindow.Close();
+            abortWindow = null;
+        }
         NKLITextureProcessorArrayStorage.ReleaseResources();
         Debug.Log(message);
     }
 
 
+    // When false, the run consults the stylized ledger and touches only
+    // textures whose artifact is missing or baked under stale settings
+    static bool runForceAll;
+
+    // Progress state must be live before the window opens, or its first OnGUI
+    // sees a dormant run and retires itself at birth
+    static void BeginRun(bool forceAll)
+    {
+        runForceAll = forceAll;
+        bulkRunActive = true;
+        progressActive = true;
+        progressCancelled = false;
+        progressStage = "Preparing";
+        progressName = "";
+        abortWindow = NKLIStylizeAbortWindow.Open();
+        StartRoutine(ScanMaterials());
+    }
+
     [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta - Apply")]
     public static void DoStylize()
     {
-        bulkRunActive = true;
-        StartRoutine(ScanMaterials());
+        BeginRun(false);
+    }
+
+    [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta - Re-Apply All")]
+    public static void DoStylizeForce()
+    {
+        BeginRun(true);
     }
 
 
     // Rebuild the classification database from every material in the project —
     // a seeding and repair pass; day-to-day upkeep happens live as materials import
+    // Only BeginRun clears the cancel flag: a phase clearing it on entry would
+    // swallow an abort clicked at the boundary between two phases
     public static IEnumerator ScanMaterials()
     {
         progressActive = true;
-        progressCancelled = false;
         progressIndex = 0;
         progressCount = 0;
         progressName = "Searching asset database";
@@ -524,7 +681,6 @@ public class NKLIAssetStylizer : MonoBehaviour
     public static IEnumerator FindAssetsByType<T>() where T : UnityEngine.Object
     {
         progressActive = true;
-        progressCancelled = false;
         progressIndex = 0;
         progressCount = 0;
         progressName = "Searching asset database";
@@ -534,6 +690,8 @@ public class NKLIAssetStylizer : MonoBehaviour
         // Paths alone decide eligibility, so the sweep costs string comparisons
         // instead of dragging every texture in the project through memory
         List<string> assets = new List<string>();
+        int alreadyStylized = 0;
+        string currentHash = CurrentFingerprintHash();
         string[] guids = AssetDatabase.FindAssets(string.Format("t:{0}", typeof(T).ToString().Replace("UnityEngine.", "")));
         progressCount = guids.Length;
         for (int i = 0; i < guids.Length; i++)
@@ -543,7 +701,18 @@ public class NKLIAssetStylizer : MonoBehaviour
             string lowerCaseAssetPath = assetPath.ToLower();
             if (lowerCaseAssetPath.IndexOf(targetString) != -1 &&
                 !IsExtensionExcluded(assetPath))
-                assets.Add(assetPath);
+            {
+                // A current ledger entry means the artifact already carries
+                // this fingerprint — only forced runs re-bake it. A stale
+                // entry re-runs (settings or role changed since); no entry
+                // re-runs unless the import would pass through pristine anyway
+                string entry;
+                bool hasEntry = stylizedLedger.TryGetValue(guids[i], out entry);
+                if (!runForceAll && hasEntry && entry == currentHash)
+                    alreadyStylized++;
+                else if (runForceAll || hasEntry || !ImportsPristine(assetPath))
+                    assets.Add(assetPath);
+            }
 
             if (i % 200 == 0)
             {
@@ -557,7 +726,8 @@ public class NKLIAssetStylizer : MonoBehaviour
             }
         }
 
-        Debug.Log("Total textures found: " + assets.Count);
+        Debug.Log("Textures to process: " + assets.Count +
+            (runForceAll ? " (forced re-bake)" : "; already stylized and skipped: " + alreadyStylized));
         StartRoutine(TextureProcessor(assets));
     }
 }

@@ -47,6 +47,7 @@ Shader "Hidden/NKLITriangleFacet"
             float _FractalChance;
             float _FractalShade;
             float _NormalPerturb;
+            float _NormalFlatten;
             float _LatticeWarp;
             float _Wrap;
             float _Dispersion;
@@ -175,18 +176,29 @@ Shader "Hidden/NKLITriangleFacet"
                     }
                 }
 
-                // Normal maps: tilt each facet's normal by a small hashed lean,
-                // gasket children leaning their own way. Gentle tilts survive
-                // mip averaging, where hard flat facets shaded as dark seams
+                // Normal maps: keep the pixel's own relief, flattened only
+                // partway toward the facet's centroid average — full
+                // flattening left facets as blank glass — then tilt by a
+                // small hashed lean, gasket children leaning their own way.
+                // Gasket children take the same encoded-space shade as the
+                // colour path, so the fractal imprints on every layer
                 if (_NormalPerturb > 0.0)
                 {
                     float2 tilt = (float2(h1, h2) - 0.5) * 2.0 * _NormalPerturb;
                     if (holeDepth > 0.0)
                         tilt += (float2(h3, h4) - 0.5) * 2.0 * _NormalPerturb / holeDepth;
 
-                    float3 n = normalize(col.rgb * 2.0 - 1.0);
+                    float4 pix = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+                    float3 n = normalize(lerp(normalize(pix.rgb * 2.0 - 1.0),
+                        normalize(col.rgb * 2.0 - 1.0), _NormalFlatten));
                     n.xy += tilt;
-                    return float4(normalize(n) * 0.5 + 0.5, col.a);
+                    float3 enc = normalize(n) * 0.5 + 0.5;
+                    if (holeDepth > 0.0)
+                    {
+                        float dir = hash21(hp + 113.7) < 0.5 ? -1.0 : 1.0;
+                        enc *= 1.0 + dir * _FractalShade / holeDepth;
+                    }
+                    return float4(enc, pix.a);
                 }
 
                 // Prismatic dispersion: split R and B along each facet's

@@ -61,6 +61,7 @@ Shader "Hidden/NKLIMuxPaintPixel"
         float _MaskHi;
         float _MaskBlur;
         float _MaskSoften;
+        float _CrystalFloor;
         float _CrystalMax;
         float _GuardLo;
         float _GuardHi;
@@ -68,6 +69,7 @@ Shader "Hidden/NKLIMuxPaintPixel"
         float _EdgeLo;
         float _EdgeHi;
         float _EdgeKeep;
+        float2 _SeamBand;
 
         float hash21(float2 p)
         {
@@ -180,7 +182,10 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 float mRaw = tex2Dlod(_MaskTex, float4(i.uv, 0.0, 0.0)).r;
                 float m = lerp(mRaw, mBlur, _MaskSoften);
 
-                float crystal = smoothstep(_MaskLo, _MaskHi, m) * _CrystalMax;
+                // A floor above zero (normal maps) keeps paint and facets
+                // mingled everywhere, where a 0..Max sweep would deal them
+                // into separate territories
+                float crystal = lerp(_CrystalFloor, _CrystalMax, smoothstep(_MaskLo, _MaskHi, m));
 
                 float4 paintBase = tex2D(_PaintTex, i.uv);
                 float4 facet = tex2D(_FacetTex, i.uv);
@@ -258,6 +263,33 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 float4 paint = tex2Dlod(_PaintTex, float4(i.uv, 0.0, 0.0));
                 float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
                 return lerp(paint, src, keep);
+            }
+            ENDCG
+        }
+
+        // Pass 3: border harmonization — each border band cross-fades with the
+        // opposite border's mirrored strip, weight 0.5 at the outermost texel,
+        // so a tiling texture's wrap edges meet exactly. The blend weights and
+        // the mirror set are both symmetric under row inversion, so the pass
+        // is indifferent to which blit generation it receives
+        Pass
+        {
+            CGPROGRAM
+            #pragma vertex vertStraight
+            #pragma fragment frag
+            #pragma target 3.0
+
+            fixed4 frag (v2f i) : SV_Target
+            {
+                float kx = _SeamBand.x > 0.0 ? 0.5 * saturate(1.0 - min(i.uv.x, 1.0 - i.uv.x) / _SeamBand.x) : 0.0;
+                float ky = _SeamBand.y > 0.0 ? 0.5 * saturate(1.0 - min(i.uv.y, 1.0 - i.uv.y) / _SeamBand.y) : 0.0;
+
+                float4 a = tex2Dlod(_MainTex, float4(i.uv.x, i.uv.y, 0.0, 0.0));
+                float4 b = tex2Dlod(_MainTex, float4(1.0 - i.uv.x, i.uv.y, 0.0, 0.0));
+                float4 c = tex2Dlod(_MainTex, float4(i.uv.x, 1.0 - i.uv.y, 0.0, 0.0));
+                float4 d = tex2Dlod(_MainTex, float4(1.0 - i.uv.x, 1.0 - i.uv.y, 0.0, 0.0));
+
+                return lerp(lerp(a, b, kx), lerp(c, d, kx), ky);
             }
             ENDCG
         }

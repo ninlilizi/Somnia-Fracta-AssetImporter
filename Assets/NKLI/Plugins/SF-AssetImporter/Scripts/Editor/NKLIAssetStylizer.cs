@@ -20,7 +20,7 @@ public class NKLIAssetStylizer : MonoBehaviour
 
     // File types never stylized: .exr and .hdr carry skybox/HDR data rather
     // than scene-geometry texture, .fbx textures are embedded in models
-    static readonly string[] excludedExtensions = { ".exr", ".hdr", ".fbx" };
+    static readonly string[] excludedExtensions = { ".exr", ".hdr", ".fbx", ".sbsar" };
 
     public static bool IsExtensionExcluded(string path)
     {
@@ -28,6 +28,15 @@ public class NKLIAssetStylizer : MonoBehaviour
             if (path.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
                 return true;
         return false;
+    }
+
+    // Folder receiving the map synthesizer's output; its contents are
+    // pre-stylized bakes and must import pristine
+    public const string generatedDirName = "sf-generated";
+
+    public static bool IsGeneratedOutput(string path)
+    {
+        return path.Replace('\\', '/').ToLower().Contains("/" + generatedDirName + "/");
     }
 
     const string progressTitle = "Somnia Fracta";
@@ -71,7 +80,7 @@ public class NKLIAssetStylizer : MonoBehaviour
     // pass through pristine, as do importer types outside Default/NormalMap
     static bool ImportsPristine(string path)
     {
-        if (IsNameExcluded(path) || IsOcclusion(path))
+        if (IsNameExcluded(path) || IsOcclusion(path) || IsGeneratedOutput(path))
             return true;
 
         TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;

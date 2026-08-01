@@ -235,16 +235,18 @@ public class NKLITextureProcessor : AssetPostprocessor
     // Flow-guided brushwork: the paint is smeared along the content's own
     // gradient flow, so strokes follow grain and contour. Lengths in texels;
     // the deep pass strokes longer. FlowMip picks the blurred mip steering the
-    // field — higher values give broader, calmer flow
-    const float effectStrokeLength = 6.0f;
-    const float effectStrokeLengthDeep = 10.0f;
+    // field — higher values give broader, calmer flow. Zero lengths collapse
+    // the stroke integral to an identity copy: smearing washes out the
+    // crystal mask's macro darkness
+    const float effectStrokeLength = 0.0f;
+    const float effectStrokeLengthDeep = 0.0f;
     const float effectFlowMip = 2.0f;
 
     // Width in texels of the border band cross-faded with the opposite
     // border's mirrored strip on tiling textures. The facet fill averages a
     // facet-sized footprint, so even a texel-thin mismatch between a source's
     // wrap edges would otherwise smear into facet-wide tonal blocks
-    const float effectSeamFade = 16.0f;
+    const float effectSeamFade = 0.0f;
 
     // Triangular facets across the width of each texture (keep integer so tiling textures wrap)
     const float effectFacetDensity = 48.0f;
@@ -264,29 +266,37 @@ public class NKLITextureProcessor : AssetPostprocessor
 
     // Facet sparkle: this fraction of facets spike their smoothness (alpha)
     // on spec/metallic maps, so crystal zones glint as the view moves
-    const float effectSparkleChance = 0.07f;
+    const float effectSparkleChance = 0.0f;
     const float effectSparkleAmount = 0.35f;
 
     // Prismatic dispersion: facet fills split R and B along each facet's
     // hashed direction by this many source texels, as light through crystal
-    const float effectDispersion = 2.0f;
+    const float effectDispersion = 0.0f;
 
     // Unsharp strength applied to each CPU-built mip's RGB, keeping the
     // crystalline character legible at distance
-    const float effectMipSharpen = 0.35f;
+    const float effectMipSharpen = 0.0f;
 
     // Per-facet normal tilt; gentle enough to survive mip averaging
     const float effectNormalPerturb = 0.05f;
+
+    // Downsample divisor of the blur preceding the normals' Kuwahara. The
+    // filter's quadrant selection preserves any edge it is given, so relief
+    // is dissolved first and the paint forms its plateaus on the broken
+    // field. The divisor sets the size of feature that melts — relief
+    // smaller than roughly twice this many texels dissolves; 1 disables
+    const float effectNormalPreBlur = 16.0f;
 
     // How far facet interiors flatten normal relief toward their centroid
     // average; partial, so facets read as tilted relief rather than glass
     const float effectNormalFacetFlatten = 0.35f;
 
-    // Normal maps composite with the crystal share pinned inside this range:
-    // relief, paint and facets mingle across the whole surface, where the
-    // colour maps' 0..CrystalMax sweep would leave patches of one ingredient
-    const float effectNormalCrystalFloor = 0.35f;
-    const float effectNormalCrystalMax = 0.65f;
+    // Normal maps composite with the crystal share swept over this range: a
+    // zero floor keeps the facet planes inside the mask's crystal zones, so
+    // the relief pools with the colour's pattern instead of gridding the
+    // whole surface
+    const float effectNormalCrystalFloor = 0.0f;
+    const float effectNormalCrystalMax = 1.0f;
 
     // Lattice warp in cell units; melts the mechanical regularity of the grid
     const float effectLatticeWarp = 1.0f;
@@ -371,7 +381,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static int height = 0;
 
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "34";
+    const string stylizationVersion = "39";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
@@ -389,7 +399,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             effectSpecMetJitter + "|" + effectSpecMetFractalShade + "|" +
             effectSparkleChance + "|" + effectSparkleAmount + "|" +
             effectDispersion + "|" + effectMipSharpen + "|" +
-            effectNormalPerturb + "|" + effectNormalFacetFlatten + "|" +
+            effectNormalPerturb + "|" + effectNormalPreBlur + "|" + effectNormalFacetFlatten + "|" +
             effectNormalCrystalFloor + "|" + effectNormalCrystalMax + "|" +
             effectLatticeWarp + "|" + effectJuliaZoom + "|" + effectJuliaWarp + "|" +
             effectFiligree + "|" + effectPool + "|" + effectMaskNoise + "|" +
@@ -401,7 +411,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             effectHighlightTint;
     }
 
-    static Shader FindShaderRobust(string shaderName, string assetName)
+    public static Shader FindShaderRobust(string shaderName, string assetName)
     {
         Shader shader = Shader.Find(shaderName);
         if (shader != null)
@@ -483,9 +493,11 @@ public class NKLITextureProcessor : AssetPostprocessor
         // Marked textures depend on the global settings fingerprint and on their
         // own classification entry, so material slot changes re-bake exactly the
         // textures whose role changed. Excluded file types stay inert: no
-        // dependencies, so fingerprint changes never reimport them
+        // dependencies, so fingerprint changes never reimport them. Synthesized
+        // outputs likewise: they are finished bakes no setting can stale
         if (assetPath.ToLower().IndexOf(NKLIAssetStylizer.targetString) != -1 &&
-            !NKLIAssetStylizer.IsExtensionExcluded(assetPath))
+            !NKLIAssetStylizer.IsExtensionExcluded(assetPath) &&
+            !NKLIAssetStylizer.IsGeneratedOutput(assetPath))
         {
             context.DependsOnCustomDependency(NKLIAssetStylizer.dependencyName);
             context.DependsOnCustomDependency(NKLIAssetStylizer.ClassDependencyName(AssetDatabase.AssetPathToGUID(assetPath)));
@@ -512,10 +524,11 @@ public class NKLITextureProcessor : AssetPostprocessor
         TextureImporter textureImporter = (TextureImporter)assetImporter;
         if (textureImporter.textureType == TextureImporterType.Default || textureImporter.textureType == TextureImporterType.NormalMap)
         {
-            // Occlusion maps, name-excluded textures and excluded file types
-            // (skybox .exr) pass through in their pure state
+            // Occlusion maps, name-excluded textures, excluded file types
+            // (skybox .exr) and synthesized outputs (already-stylized bakes)
+            // pass through in their pure state
             if (NKLIAssetStylizer.IsOcclusion(assetPath) || NKLIAssetStylizer.IsNameExcluded(assetPath) ||
-                NKLIAssetStylizer.IsExtensionExcluded(assetPath))
+                NKLIAssetStylizer.IsExtensionExcluded(assetPath) || NKLIAssetStylizer.IsGeneratedOutput(assetPath))
             {
                 NKLIAssetStylizer.RecordUnstylized(assetPath);
                 Debug.Log("Texture left pristine: " + assetPath);
@@ -673,9 +686,14 @@ public class NKLITextureProcessor : AssetPostprocessor
                     }
 
                     // Spec/metallic maps keep their processed alpha so the
-                    // facet sparkle can live in smoothness; every other class
-                    // splices the original alpha back bit-for-bit
-                    if (!isSpecMetallic)
+                    // facet sparkle can live in smoothness. Normal maps keep
+                    // theirs too: Unity hands them to the postprocessor
+                    // AG-swizzled — X slope in alpha, R pinned to one — so
+                    // splicing the original alpha would resurrect the source's
+                    // X relief over the processed result, leaving the effect
+                    // visible in only one slope of the lighting. Only colour
+                    // maps splice the original alpha back bit-for-bit
+                    if (!isSpecMetallic && !isNormalMap)
                         for (int p = 0; p < processed.Length; p++)
                             processed[p].a = original[p].a;
                     texture.SetPixels(processed, 0);
@@ -870,19 +888,46 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialPaint.SetFloat("_FixDistance", -1.0f);
             materialPaint.SetFloat("_LightIntensity", effectStrengthPainterly);
             materialPaint.SetVector("_ScreenResolution", texSize);
-            Graphics.Blit(refRTSrc, refRTInt, materialPaint);
 
-            // Flow field from the source's own gradients; the stroke pass then
-            // smears the paint along it, following grain and contour
-            NKLIAssetStylizer.ReportSubStage("Flow strokes");
-            materialFlow.SetVector("_TexSize", texSize);
-            materialFlow.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
-            materialFlow.SetFloat("_FlowMip", effectFlowMip);
-            Graphics.Blit(refRTSrc, refRTFlow, materialFlow, 0);
+            if (isNormalMap)
+            {
+                // Kuwahara over a pre-broken field: the filter's own quadrant
+                // selection preserves any edge it is given, so a mip down/up
+                // round trip melts the relief first and the paint calms what
+                // remains. No flow strokes — they would drag the encoded
+                // vectors off their meaning. The final copy leaves the paint
+                // at the even parity the guard's straight sampling expects
+                RenderTexture refRTBlur = RenderTexture.GetTemporary(
+                    Mathf.Max(1, (int)(texWidth / effectNormalPreBlur)),
+                    Mathf.Max(1, (int)(texHeight / effectNormalPreBlur)),
+                    0, RenderTextureFormat.ARGBFloat);
+                refRTBlur.wrapMode = rtWrap;
+                refRTBlur.filterMode = FilterMode.Bilinear;
 
-            materialFlow.SetTexture("_FlowTex", refRTFlow);
-            materialFlow.SetFloat("_StrokeLength", effectStrokeLength);
-            Graphics.Blit(refRTInt, refRTStroke, materialFlow, 1);
+                // The downsample reads the source's trilinear mip chain, so
+                // it is a true box average rather than a sparse skim
+                Graphics.Blit(refRTSrc, refRTBlur, materialFlip);
+                Graphics.Blit(refRTBlur, refRTStroke, materialFlip);
+                RenderTexture.ReleaseTemporary(refRTBlur);
+                Graphics.Blit(refRTStroke, refRTInt, materialPaint);
+                Graphics.Blit(refRTInt, refRTStroke, materialFlip);
+            }
+            else
+            {
+                Graphics.Blit(refRTSrc, refRTInt, materialPaint);
+
+                // Flow field from the source's own gradients; the stroke pass
+                // then smears the paint along it, following grain and contour
+                NKLIAssetStylizer.ReportSubStage("Flow strokes");
+                materialFlow.SetVector("_TexSize", texSize);
+                materialFlow.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
+                materialFlow.SetFloat("_FlowMip", effectFlowMip);
+                Graphics.Blit(refRTSrc, refRTFlow, materialFlow, 0);
+
+                materialFlow.SetTexture("_FlowTex", refRTFlow);
+                materialFlow.SetFloat("_StrokeLength", effectStrokeLength);
+                Graphics.Blit(refRTInt, refRTStroke, materialFlow, 1);
+            }
 
             // Sobel edge guard: restore source detail where the paint would
             // smear strong colour or luma edges
@@ -932,7 +977,7 @@ public class NKLITextureProcessor : AssetPostprocessor
 
         RenderTexture refRTGraded;
 
-        if (!isSpecMetallic)
+        if (isColour)
         {
             // Deeper painterly pass for the regions the crystal leaves
             // untouched, with longer strokes, through the same edge guard
@@ -943,6 +988,18 @@ public class NKLITextureProcessor : AssetPostprocessor
             Graphics.Blit(refRTInt, refRTStroke, materialFlow, 1);
             materialMux.SetTexture("_PaintTex", refRTStroke);
             Graphics.Blit(refRTSrc, refRTIntPaintStrong, materialMux, 2);
+        }
+
+        // Facets tilt the painted normals, not the raw source — the raw
+        // relief would ride the facet layer straight back into the composite.
+        // The copy realigns rows (the guarded paint is one blit generation
+        // from the source), and the mip chain feeds the facet-averaging
+        // tex2Dlod
+        if (isNormalMap)
+        {
+            Graphics.Blit(refRTIntPaint, refRTFlow, materialFlip);
+            refRTFlow.filterMode = FilterMode.Trilinear;
+            refRTFlow.GenerateMips();
         }
 
         // Apply triangular facet filter. Colour maps take the full fill
@@ -964,7 +1021,7 @@ public class NKLITextureProcessor : AssetPostprocessor
         materialFacet.SetFloat("_Dispersion", isColour ? effectDispersion : 0.0f);
         materialFacet.SetFloat("_SparkleChance", isSpecMetallic ? effectSparkleChance : 0.0f);
         materialFacet.SetFloat("_SparkleAmount", effectSparkleAmount);
-        Graphics.Blit(refRTSrc, refRTIntFacet, materialFacet);
+        Graphics.Blit(isNormalMap ? refRTFlow : refRTSrc, refRTIntFacet, materialFacet);
 
         // Render the Julia crystallization mask, then mip-blur it so
         // crystal and paint trade places across wide, gentle borders
@@ -983,13 +1040,12 @@ public class NKLITextureProcessor : AssetPostprocessor
         refRTMask.GenerateMips();
 
         // Composite the base and facets through the softened mask. Colour
-        // and normal maps blend between the two paint strengths;
-        // spec/metallic maps blend facets over their untouched source copy.
-        // Normal maps pin the crystal share inside a band so relief, paint
-        // and facets stay mingled across the whole surface
+        // maps blend between the two paint strengths; spec/metallic and
+        // normal maps blend facets over their single base, with the normal
+        // facets swept in only where the crystal mask pools
         RenderTexture refRTBase = refRTIntPaint;
         materialMux.SetTexture("_PaintTex", refRTBase);
-        materialMux.SetTexture("_PaintStrongTex", isSpecMetallic ? refRTBase : refRTIntPaintStrong);
+        materialMux.SetTexture("_PaintStrongTex", isColour ? refRTIntPaintStrong : refRTBase);
         materialMux.SetTexture("_FacetTex", refRTIntFacet);
         materialMux.SetTexture("_MaskTex", refRTMask);
         materialMux.SetFloat("_MaskLo", effectMaskLo);

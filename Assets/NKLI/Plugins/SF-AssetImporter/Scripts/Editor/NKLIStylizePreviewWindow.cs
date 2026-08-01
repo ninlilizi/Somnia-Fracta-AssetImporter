@@ -110,9 +110,9 @@ public class NKLIStylizePreviewWindow : EditorWindow
         }
 
         if (NKLIAssetStylizer.IsOcclusion(path) || NKLIAssetStylizer.IsNameExcluded(path) ||
-            NKLIAssetStylizer.IsExtensionExcluded(path))
+            NKLIAssetStylizer.IsExtensionExcluded(path) || NKLIAssetStylizer.IsGeneratedOutput(path))
         {
-            info = "This texture imports pristine (occlusion / name / file-type exclusion).";
+            info = "This texture imports pristine (occlusion / name / file-type / synthesized-output exclusion).";
             return;
         }
 

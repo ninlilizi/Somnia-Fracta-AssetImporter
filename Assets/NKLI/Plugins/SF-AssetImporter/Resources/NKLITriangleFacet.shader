@@ -179,9 +179,11 @@ Shader "Hidden/NKLITriangleFacet"
                 // Normal maps: keep the pixel's own relief, flattened only
                 // partway toward the facet's centroid average — full
                 // flattening left facets as blank glass — then tilt by a
-                // small hashed lean, gasket children leaning their own way.
-                // Gasket children take the same encoded-space shade as the
-                // colour path, so the fractal imprints on every layer
+                // small hashed lean, gasket children leaning their own way
+                // and shading their slopes so the fractal imprints. Unity
+                // stores the X slope in alpha with R pinned to one (AG
+                // encoding); r*a decodes both that and plain RGB normals,
+                // and the result re-encodes into the layout it arrived in
                 if (_NormalPerturb > 0.0)
                 {
                     float2 tilt = (float2(h1, h2) - 0.5) * 2.0 * _NormalPerturb;
@@ -189,16 +191,26 @@ Shader "Hidden/NKLITriangleFacet"
                         tilt += (float2(h3, h4) - 0.5) * 2.0 * _NormalPerturb / holeDepth;
 
                     float4 pix = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
-                    float3 n = normalize(lerp(normalize(pix.rgb * 2.0 - 1.0),
-                        normalize(col.rgb * 2.0 - 1.0), _NormalFlatten));
+                    float3 nPix;
+                    nPix.xy = float2(pix.r * pix.a, pix.g) * 2.0 - 1.0;
+                    nPix.z = sqrt(saturate(1.0 - dot(nPix.xy, nPix.xy)));
+                    float3 nAvg;
+                    nAvg.xy = float2(col.r * col.a, col.g) * 2.0 - 1.0;
+                    nAvg.z = sqrt(saturate(1.0 - dot(nAvg.xy, nAvg.xy)));
+
+                    float3 n = normalize(lerp(nPix, nAvg, _NormalFlatten));
                     n.xy += tilt;
-                    float3 enc = normalize(n) * 0.5 + 0.5;
+                    n = normalize(n);
+
+                    float2 enc = n.xy * 0.5 + 0.5;
                     if (holeDepth > 0.0)
                     {
                         float dir = hash21(hp + 113.7) < 0.5 ? -1.0 : 1.0;
                         enc *= 1.0 + dir * _FractalShade / holeDepth;
                     }
-                    return float4(enc, pix.a);
+                    return pix.a < 0.999
+                        ? float4(pix.r, enc.y, pix.b, enc.x)
+                        : float4(enc.x, enc.y, n.z * 0.5 + 0.5, pix.a);
                 }
 
                 // Prismatic dispersion: split R and B along each facet's

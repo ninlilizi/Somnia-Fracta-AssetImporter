@@ -16,7 +16,7 @@ public class NKLIStylizePreviewWindow : EditorWindow
     Vector2 scroll;
     string info = "";
 
-    [MenuItem("NKLI/Bulk Stylize Assets/Somnia Fracta - Preview")]
+    [MenuItem("Tools/NKLI/Bulk Stylize Assets/Somnia Fracta - Preview")]
     static void Open()
     {
         GetWindow<NKLIStylizePreviewWindow>("Somnia Fracta");

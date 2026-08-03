@@ -215,11 +215,15 @@ public class NKLIAssetStylizer : MonoBehaviour
             SaveStylizedLedger();
     }
 
-    // Imports that ran in a parallel import worker never pass through the main
-    // editor's texture postprocessor, and workers always decline stylization —
-    // so any marked texture imported this batch without touching the ledger
-    // came back unstylized and forfeits its entry
-    public static void ReconcileLedger(string[] imported)
+    // Settles the ledger after each import batch. A texture stylized on the
+    // main editor always records its outcome, so any ledger-listed asset
+    // imported this batch WITHOUT touching the ledger came back unstylized:
+    // worker-process imports (workers always decline stylization), textures
+    // that shed their marker and reimport pristine, package restores replayed
+    // outside the postprocessor's stylizing branch, and importer types the
+    // stylizer passes over. All forfeit their entries so the next bulk Apply
+    // re-bakes them. Deleted assets surrender their entries as hygiene
+    public static void ReconcileLedger(string[] imported, string[] deleted)
     {
         if (AssetDatabase.IsAssetImportWorkerProcess())
             return;
@@ -227,7 +231,7 @@ public class NKLIAssetStylizer : MonoBehaviour
         bool changed = false;
         foreach (string path in imported)
         {
-            if (path.ToLower().IndexOf(targetString) == -1 || ledgerTouchedThisBatch.Contains(path))
+            if (ledgerTouchedThisBatch.Contains(path))
                 continue;
 
             string guid = AssetDatabase.AssetPathToGUID(path);
@@ -235,6 +239,13 @@ public class NKLIAssetStylizer : MonoBehaviour
                 changed |= stylizedLedger.Remove(guid);
         }
         ledgerTouchedThisBatch.Clear();
+
+        foreach (string path in deleted)
+        {
+            string guid = AssetDatabase.AssetPathToGUID(path, AssetPathToGUIDOptions.IncludeRecentlyDeletedAssets);
+            if (!string.IsNullOrEmpty(guid))
+                changed |= stylizedLedger.Remove(guid);
+        }
 
         if (changed)
             SaveStylizedLedger();
@@ -580,13 +591,13 @@ public class NKLIAssetStylizer : MonoBehaviour
         StartRoutine(ScanMaterials());
     }
 
-    [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta - Apply")]
+    [MenuItem("Tools/NKLI/Bulk Stylize Assets/Somnia-Fracta - Apply")]
     public static void DoStylize()
     {
         BeginRun(false);
     }
 
-    [MenuItem("NKLI/Bulk Stylize Assets/Somnia-Fracta - Re-Apply All")]
+    [MenuItem("Tools/NKLI/Bulk Stylize Assets/Somnia-Fracta - Re-Apply All")]
     public static void DoStylizeForce()
     {
         BeginRun(true);

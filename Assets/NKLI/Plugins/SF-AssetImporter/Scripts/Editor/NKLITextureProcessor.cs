@@ -508,7 +508,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
     {
         NKLIAssetStylizer.OnMaterialAssetsChanged(importedAssets, deletedAssets, movedAssets, movedFromAssetPaths);
-        NKLIAssetStylizer.ReconcileLedger(importedAssets);
+        NKLIAssetStylizer.ReconcileLedger(importedAssets, deletedAssets);
     }
 
     // Processes textures. Runs for every import of a marked texture — bulk menu
@@ -567,7 +567,7 @@ public class NKLITextureProcessor : AssetPostprocessor
                 RenderTexture.ReleaseTemporary(refRTDst);
                 NKLIAssetStylizer.RecordUnstylized(assetPath);
                 Debug.LogWarning("Somnia Fracta: effect shaders unavailable during this import; texture left unstylized: " + assetPath +
-                    ". Run 'NKLI/Bulk Stylize Assets/Somnia-Fracta' once the import completes.");
+                    ". Run 'Tools/NKLI/Bulk Stylize Assets/Somnia-Fracta' once the import completes.");
                 return;
             }
 

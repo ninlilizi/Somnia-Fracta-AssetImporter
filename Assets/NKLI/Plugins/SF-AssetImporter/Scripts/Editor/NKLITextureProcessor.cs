@@ -221,10 +221,15 @@ public class NKLITextureProcessor : AssetPostprocessor
 
     // Sobel edge guard on the painterly passes: colour/luma gradients above Lo
     // begin restoring source detail, fully restored by Hi; Keep caps the
-    // restoration so the paint still unifies the surface
+    // restoration. Colour maps run guardless (Keep 0) - the Kuwahara preserves
+    // edges on its own, and restoration left finely detailed surfaces reading
+    // as bare source wherever the crystal mask receded - so the paint holds
+    // wall to wall. Normal maps keep their guard, protecting the encoded
+    // geometry of seams and creases
     const float effectEdgeLo = 0.12f;
     const float effectEdgeHi = 0.55f;
-    const float effectEdgeKeep = 0.85f;
+    const float effectEdgeKeep = 0.0f;
+    const float effectEdgeKeepNormal = 0.85f;
 
     // A normal map is a gradient field by construction: its whole body trips
     // the colour thresholds and the guard smothers the paint. These wait for
@@ -390,7 +395,7 @@ public class NKLITextureProcessor : AssetPostprocessor
         return stylizationVersion + "|" + string.Join(",", NKLIAssetStylizer.excludedNameTokens) + "|" +
             string.Join(",", NKLIAssetStylizer.excludedNameSuffixes) + "|" +
             effectStrengthPainterly + "|" + effectStrengthPainterlyMax + "|" +
-            effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" +
+            effectEdgeLo + "|" + effectEdgeHi + "|" + effectEdgeKeep + "|" + effectEdgeKeepNormal + "|" +
             effectEdgeLoNormal + "|" + effectEdgeHiNormal + "|" +
             effectStrokeLength + "|" + effectStrokeLengthDeep + "|" + effectFlowMip + "|" + effectFacetDensity + "|" +
             effectFacetJitter + "|" + effectFacetHueJitter + "|" + effectFacetSatJitter + "|" +
@@ -935,7 +940,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialMux.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
             materialMux.SetFloat("_EdgeLo", isNormalMap ? effectEdgeLoNormal : effectEdgeLo);
             materialMux.SetFloat("_EdgeHi", isNormalMap ? effectEdgeHiNormal : effectEdgeHi);
-            materialMux.SetFloat("_EdgeKeep", effectEdgeKeep);
+            materialMux.SetFloat("_EdgeKeep", isNormalMap ? effectEdgeKeepNormal : effectEdgeKeep);
             materialMux.SetTexture("_PaintTex", refRTStroke);
             Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
 

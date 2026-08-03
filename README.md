@@ -14,7 +14,7 @@ This is intended for use in my own games, however it shows off how to perform so
 
 ## Effect
 
-- **Painterly base** - Kuwahara oil-paint filtering, deepening where the crystal effect recedes.
+- **Painterly base** - Kuwahara oil-paint filtering across the entire surface, deepening where the crystal effect recedes.
 - **Triangular facets** - an organically warped equilateral-triangle mosaic; facets are area-averaged fills with per-facet hue/saturation/luminance drift. No outlines.
 - **Sierpinski gaskets** - a hashed minority of facets subdivide three generations deep, children shaded lighter or darker.
 - **Julia crystallization mask** - a tiling orbit-trapped Julia set decides where facets emerge; mip-blurred for wide, gentle blends. Seeded per folder, so all maps of one asset align and every folder is a unique variation.

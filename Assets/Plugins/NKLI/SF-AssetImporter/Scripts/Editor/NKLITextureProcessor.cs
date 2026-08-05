@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 using Unity.Collections;
@@ -9,227 +10,53 @@ using UnityEngine.Rendering;
 
 using Object = UnityEngine.Object;
 
+// Pooled persistent readback buffers, keyed by length and allocated only on
+// first demand, so a bulk run reuses one buffer per texture size instead of
+// paying an allocation per import. Float elements give sixteen bytes per
+// pixel: headroom over every uncompressed format the readback may deliver
 static class NKLITextureProcessorArrayStorage
 {
-    public static NativeArray<float> nativeArray4096;
-    public static NativeArray<float> nativeArray2048;
-    public static NativeArray<float> nativeArray1024;
-    public static NativeArray<float> nativeArray512;
-    public static NativeArray<float> nativeArray256;
-    public static NativeArray<float> nativeArray128;
-    public static NativeArray<float> nativeArray64;
-    public static NativeArray<float> nativeArray32;
-    public static NativeArray<float> nativeArray16;
-    public static NativeArray<float> nativeArray8;
-    public static NativeArray<float> nativeArray4;
-    public static NativeArray<float> nativeArray2;
-    public static NativeArray<float> nativeArray1;
+    static readonly Dictionary<int, NativeArray<float>> pool = new Dictionary<int, NativeArray<float>>();
 
-    public const int size4096 = 67108864;
-    public const int size2048 = 16777216;
-    public const int size1024 = 4194304;
-    public const int size512 = 1048576;
-    public const int size256 = 262144;
-    public const int size128 = 65536;
-    public const int size64 = 16384;
-    public const int size32 = 4096;
-    public const int size16 = 1024;
-    public const int size8 = 256;
-    public const int size4 = 64;
-    public const int size2 = 16;
-    public const int size1 = 4;
-
-    public static bool allocated4096;
-    public static bool allocated2048;
-    public static bool allocated1024;
-    public static bool allocated512;
-    public static bool allocated256;
-    public static bool allocated128;
-    public static bool allocated64;
-    public static bool allocated32;
-    public static bool allocated16;
-    public static bool allocated8;
-    public static bool allocated4;
-    public static bool allocated2;
-    public static bool allocated1;
-
-    private static bool resourcesAllocated;
-
-    public static void AllocateResources()
+    public static NativeArray<float> GetArray(int length)
     {
-        if (!resourcesAllocated)
+        NativeArray<float> array;
+        if (!pool.TryGetValue(length, out array))
         {
-            if (!allocated4096)
-            {
-                allocated4096 = true;
-                nativeArray4096 = new NativeArray<float>(size4096, Allocator.Persistent);
-            }
-            if (!allocated2048)
-            {
-                allocated2048 = true;
-                nativeArray2048 = new NativeArray<float>(size2048, Allocator.Persistent);
-            }
-            if (!allocated1024)
-            {
-                allocated1024 = true;
-                nativeArray1024 = new NativeArray<float>(size1024, Allocator.Persistent);
-            }
-            if (!allocated512)
-            {
-                allocated512 = true;
-                nativeArray512 = new NativeArray<float>(size512, Allocator.Persistent);
-            }
-            if (!allocated256)
-            {
-                allocated256 = true;
-                nativeArray256 = new NativeArray<float>(size256, Allocator.Persistent);
-            }
-            if (!allocated128)
-            {
-                allocated128 = true;
-                nativeArray128 = new NativeArray<float>(size128, Allocator.Persistent);
-            }
-            if (!allocated64)
-            {
-                allocated64 = true;
-                nativeArray64 = new NativeArray<float>(size64, Allocator.Persistent);
-            }
-            if (!allocated32)
-            {
-                allocated32 = true;
-                nativeArray32 = new NativeArray<float>(size32, Allocator.Persistent);
-            }
-            if (!allocated16)
-            {
-                allocated16 = true;
-                nativeArray16 = new NativeArray<float>(size16, Allocator.Persistent);
-            }
-            if (!allocated8)
-            {
-                allocated8 = true;
-                nativeArray8 = new NativeArray<float>(size8, Allocator.Persistent);
-            }
-            if (!allocated4)
-            {
-                allocated4 = true;
-                nativeArray4 = new NativeArray<float>(size4, Allocator.Persistent);
-            }
-            if (!allocated2)
-            {
-                allocated2 = true;
-                nativeArray2 = new NativeArray<float>(size2, Allocator.Persistent);
-            }
-            if (!allocated1)
-            {
-                allocated1 = true;
-                nativeArray1 = new NativeArray<float>(size1, Allocator.Persistent);
-            }
+            array = new NativeArray<float>(length, Allocator.Persistent);
+            pool[length] = array;
         }
-
-        resourcesAllocated = true;
+        return array;
     }
 
     public static void ReleaseResources()
     {
-        resourcesAllocated = false;
-
-        if (allocated4096)
-        {
-            allocated4096 = false;
-            nativeArray4096.Dispose();
-        }
-
-        if (allocated2048)
-        {
-            allocated2048 = false;
-            nativeArray2048.Dispose();
-        }
-
-        if (allocated1024)
-        {
-            allocated1024 = false;
-            nativeArray1024.Dispose();
-        }
-
-        if (allocated512)
-        {
-            allocated512 = false;
-            nativeArray512.Dispose();
-        }
-
-        if (allocated256)
-        {
-            allocated256 = false;
-            nativeArray256.Dispose();
-        }
-
-        if (allocated128)
-        {
-            allocated128 = false;
-            nativeArray128.Dispose();
-        }
-
-        if (allocated64)
-        {
-            allocated64 = false;
-            nativeArray64.Dispose();
-        }
-
-        if (allocated32)
-        {
-            allocated32 = false;
-            nativeArray32.Dispose();
-        }
-
-        if (allocated16)
-        {
-            allocated16 = false;
-            nativeArray16.Dispose();
-        }
-
-        if (allocated8)
-        {
-            allocated8 = false;
-            nativeArray8.Dispose();
-        }
-
-        if (allocated4)
-        {
-            allocated4 = false;
-            nativeArray4.Dispose();
-        }
-
-        if (allocated2)
-        {
-            allocated2 = false;
-            nativeArray2.Dispose();
-        }
-
-        if (allocated1)
-        {
-            allocated1 = false;
-            nativeArray1.Dispose();
-        }
+        foreach (NativeArray<float> array in pool.Values)
+            array.Dispose();
+        pool.Clear();
     }
 }
 
 public class NKLITextureProcessor : AssetPostprocessor
 {
     // Strength of painterly effect; Max applies where the crystal fades to none
-    const float effectStrengthPainterly = 2.0f;
-    const float effectStrengthPainterlyMax = 4.0f;
+    const float effectStrengthPainterly = 1.5f;
+    const float effectStrengthPainterlyMax = 3.0f;
 
     // Sobel edge guard on the painterly passes: colour/luma gradients above Lo
     // begin restoring source detail, fully restored by Hi; Keep caps the
-    // restoration. Colour maps run guardless (Keep 0) - the Kuwahara preserves
-    // edges on its own, and restoration left finely detailed surfaces reading
-    // as bare source wherever the crystal mask receded - so the paint holds
-    // wall to wall. Normal maps keep their guard, protecting the encoded
-    // geometry of seams and creases
+    // restoration. Every class now runs guardless (Keep 0). Colour maps: the
+    // Kuwahara preserves edges on its own, and restoration left detailed
+    // surfaces reading as bare source. Normal maps: sources rich in
+    // near-discontinuous relief (crystal striations, dense ridges) tripped
+    // the guard across their whole body and resurrected the raw relief over
+    // the facet planes - the lit surface then followed the source, not the
+    // lattice. Raise KeepNormal only if unpainted seams and creases must
+    // survive into the paint share of the composite
     const float effectEdgeLo = 0.12f;
     const float effectEdgeHi = 0.55f;
     const float effectEdgeKeep = 0.0f;
-    const float effectEdgeKeepNormal = 0.85f;
+    const float effectEdgeKeepNormal = 0.0f;
 
     // A normal map is a gradient field by construction: its whole body trips
     // the colour thresholds and the guard smothers the paint. These wait for
@@ -265,13 +92,29 @@ public class NKLITextureProcessor : AssetPostprocessor
     const float effectFractalChance = 0.35f;
     const float effectFractalShade = 0.2f;
 
-    // Perturbation of specular/metallic maps so facets catch the light
+    // Gasket shade strength for the darkening children on colour maps;
+    // lightening children keep the full effectFractalShade. Multiplicative
+    // in linear space, so the perceptual step is uniform across bright and
+    // dim albedos - the sunken triangles stay flavour, never the meal
+    const float effectFractalShadeDark = 0.05f;
+
+    // Slope shade of gasket children on normal maps: the imprint pressing
+    // the fractal into the relief. Far gentler than the colour shade - a
+    // slope step is amplified by direct light, where a tint is not
+    const float effectNormalFractalShade = 0.05f;
+
+    // Perturbation of specular/metallic maps so facets catch the light;
+    // their gasket shade is shared with the normal maps
     const float effectSpecMetJitter = 0.06f;
-    const float effectSpecMetFractalShade = 0.1f;
+
+    // Spec/metallic maps take the facet layer outright - their crystal
+    // share pins to this - so the specular response clips to the triangles
+    // and no raw surface detail bleeds into the highlights
+    const float effectSpecMetCrystal = 1.0f;
 
     // Facet sparkle: this fraction of facets spike their smoothness (alpha)
     // on spec/metallic maps, so crystal zones glint as the view moves
-    const float effectSparkleChance = 0.0f;
+    const float effectSparkleChance = 0.18f;
     const float effectSparkleAmount = 0.35f;
 
     // Prismatic dispersion: facet fills split R and B along each facet's
@@ -280,10 +123,21 @@ public class NKLITextureProcessor : AssetPostprocessor
 
     // Unsharp strength applied to each CPU-built mip's RGB, keeping the
     // crystalline character legible at distance
-    const float effectMipSharpen = 0.0f;
+    const float effectMipSharpen = 0.3f;
 
-    // Per-facet normal tilt; gentle enough to survive mip averaging
-    const float effectNormalPerturb = 0.05f;
+    // Unsharp strength on the painted base of colour maps: the paint's soft
+    // plateau borders regain definition without resurrecting the raw
+    // texture the paint unified
+    const float effectPaintSharpen = 0.8f;
+
+    // Per-facet normal tilt amplitude. The lean follows a smooth
+    // low-frequency field, so the crystal rolls in broad waves; Deviation is
+    // the fraction of that amplitude each facet may stray from the field -
+    // the true gap between neighbouring triangles under direct light. The
+    // fraction is held low as the amplitude climbs, so bolder waves do not
+    // drag the facet discord up with them
+    const float effectNormalPerturb = 0.2f;
+    const float effectNormalDeviation = 0.15f;
 
     // Downsample divisor of the blur preceding the normals' Kuwahara. The
     // filter's quadrant selection preserves any edge it is given, so relief
@@ -293,15 +147,25 @@ public class NKLITextureProcessor : AssetPostprocessor
     const float effectNormalPreBlur = 16.0f;
 
     // How far facet interiors flatten normal relief toward their centroid
-    // average; partial, so facets read as tilted relief rather than glass
-    const float effectNormalFacetFlatten = 0.35f;
+    // average. Full: each facet is a true cut plane, and all relief within
+    // it yields to the tilt waves and the gasket imprint
+    const float effectNormalFacetFlatten = 1.0f;
 
-    // Normal maps composite with the crystal share swept over this range: a
-    // zero floor keeps the facet planes inside the mask's crystal zones, so
-    // the relief pools with the colour's pattern instead of gridding the
-    // whole surface
-    const float effectNormalCrystalFloor = 0.0f;
+    // How far the facet base plane abandons the source's melted orientation
+    // for the flat surface normal. At one, facet orientation is purely the
+    // lattice's lean - wholly synthetic cut-gem planes
+    const float effectNormalFlatBase = 1.0f;
+
+    // Normal maps composite as pure facet planes: the crystal share pins to
+    // one, so each triangle carries a single constant normal and catches
+    // light as one rigid body - whole facets flash at once rather than
+    // hosting a sheen that travels across them
+    const float effectNormalCrystalFloor = 1.0f;
     const float effectNormalCrystalMax = 1.0f;
+
+    // Occlusion maps keep a lifted floor instead, so the painterly wash and
+    // the facet lattice stay mingled across the whole surface
+    const float effectOccCrystalFloor = 0.6f;
 
     // Lattice warp in cell units; melts the mechanical regularity of the grid
     const float effectLatticeWarp = 1.0f;
@@ -354,14 +218,6 @@ public class NKLITextureProcessor : AssetPostprocessor
 
 
 
-    static Shader shaderGamma;
-    static Shader shaderFlip;
-    static Shader shaderMux;
-    static Shader shaderPaint;
-    static Shader shaderFacet;
-    static Shader shaderGrade;
-    static Shader shaderFlow;
-
     static Material materialGamma;
     static Material materialFlip;
     static Material materialMux;
@@ -382,11 +238,8 @@ public class NKLITextureProcessor : AssetPostprocessor
         colorFormat = RenderTextureFormat.ARGBFloat
     };
 
-    static int width = 0;
-    static int height = 0;
-
     // Bump when shader code changes; the constants join the fingerprint automatically
-    const string stylizationVersion = "39";
+    const string stylizationVersion = "50";
 
     // Fingerprint of every setting that shapes the effect; hashed into the
     // custom dependency so changed settings invalidate stale artifacts
@@ -400,12 +253,14 @@ public class NKLITextureProcessor : AssetPostprocessor
             effectStrokeLength + "|" + effectStrokeLengthDeep + "|" + effectFlowMip + "|" + effectFacetDensity + "|" +
             effectFacetJitter + "|" + effectFacetHueJitter + "|" + effectFacetSatJitter + "|" +
             effectSeamFade + "|" +
-            effectFractalChance + "|" + effectFractalShade + "|" +
-            effectSpecMetJitter + "|" + effectSpecMetFractalShade + "|" +
+            effectFractalChance + "|" + effectFractalShade + "|" + effectFractalShadeDark + "|" +
+            effectNormalFractalShade + "|" +
+            effectSpecMetJitter + "|" + effectSpecMetCrystal + "|" +
             effectSparkleChance + "|" + effectSparkleAmount + "|" +
-            effectDispersion + "|" + effectMipSharpen + "|" +
-            effectNormalPerturb + "|" + effectNormalPreBlur + "|" + effectNormalFacetFlatten + "|" +
-            effectNormalCrystalFloor + "|" + effectNormalCrystalMax + "|" +
+            effectDispersion + "|" + effectMipSharpen + "|" + effectPaintSharpen + "|" +
+            effectNormalPerturb + "|" + effectNormalDeviation + "|" + effectNormalPreBlur + "|" + effectNormalFacetFlatten + "|" +
+            effectNormalFlatBase + "|" +
+            effectNormalCrystalFloor + "|" + effectNormalCrystalMax + "|" + effectOccCrystalFloor + "|" +
             effectLatticeWarp + "|" + effectJuliaZoom + "|" + effectJuliaWarp + "|" +
             effectFiligree + "|" + effectPool + "|" + effectMaskNoise + "|" +
             effectMaskLo + "|" + effectMaskHi + "|" + effectMaskBlur + "|" +
@@ -450,13 +305,13 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialFlow != null)
             return true;
 
-        shaderGamma = FindShaderRobust("Hidden/NKLIGammaCorrect", "NKLIGammaCorrect");
-        shaderFlip = FindShaderRobust("Hidden/NKLIBlitFlip", "NKLIBlitFlip");
-        shaderMux = FindShaderRobust("Hidden/NKLIMuxPaintPixel", "NKLIMuxPaintPixel");
-        shaderPaint = FindShaderRobust("CameraFilterPack/Deep_OilPaintHQ", "CameraFilterPack_Pixelisation_DeepOilPaintHQ");
-        shaderFacet = FindShaderRobust("Hidden/NKLITriangleFacet", "NKLITriangleFacet");
-        shaderGrade = FindShaderRobust("Hidden/NKLIGloamingGrade", "NKLIGloamingGrade");
-        shaderFlow = FindShaderRobust("Hidden/NKLIFlowStroke", "NKLIFlowStroke");
+        Shader shaderGamma = FindShaderRobust("Hidden/NKLIGammaCorrect", "NKLIGammaCorrect");
+        Shader shaderFlip = FindShaderRobust("Hidden/NKLIBlitFlip", "NKLIBlitFlip");
+        Shader shaderMux = FindShaderRobust("Hidden/NKLIMuxPaintPixel", "NKLIMuxPaintPixel");
+        Shader shaderPaint = FindShaderRobust("CameraFilterPack/Deep_OilPaintHQ", "CameraFilterPack_Pixelisation_DeepOilPaintHQ");
+        Shader shaderFacet = FindShaderRobust("Hidden/NKLITriangleFacet", "NKLITriangleFacet");
+        Shader shaderGrade = FindShaderRobust("Hidden/NKLIGloamingGrade", "NKLIGloamingGrade");
+        Shader shaderFlow = FindShaderRobust("Hidden/NKLIFlowStroke", "NKLIFlowStroke");
 
         if (shaderGamma == null || shaderFlip == null || shaderMux == null ||
             shaderPaint == null || shaderFacet == null || shaderGrade == null ||
@@ -529,10 +384,15 @@ public class NKLITextureProcessor : AssetPostprocessor
         TextureImporter textureImporter = (TextureImporter)assetImporter;
         if (textureImporter.textureType == TextureImporterType.Default || textureImporter.textureType == TextureImporterType.NormalMap)
         {
-            // Occlusion maps, name-excluded textures, excluded file types
-            // (skybox .exr) and synthesized outputs (already-stylized bakes)
-            // pass through in their pure state
-            if (NKLIAssetStylizer.IsOcclusion(assetPath) || NKLIAssetStylizer.IsNameExcluded(assetPath) ||
+            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
+            bool isOcclusion = !isNormalMap && NKLIAssetStylizer.IsOcclusion(assetPath);
+
+            // Name-excluded textures, excluded file types (skybox .exr) and
+            // synthesized outputs (already-stylized bakes) pass through in
+            // their pure state. Classification outranks a name exclusion:
+            // an AO map seated in an occlusion slot takes the stylization
+            // rather than importing untouched
+            if ((NKLIAssetStylizer.IsNameExcluded(assetPath) && !isOcclusion) ||
                 NKLIAssetStylizer.IsExtensionExcluded(assetPath) || NKLIAssetStylizer.IsGeneratedOutput(assetPath))
             {
                 NKLIAssetStylizer.RecordUnstylized(assetPath);
@@ -550,8 +410,7 @@ public class NKLITextureProcessor : AssetPostprocessor
                 return;
             }
 
-            bool isNormalMap = textureImporter.textureType == TextureImporterType.NormalMap;
-            bool isSpecMetallic = !isNormalMap && NKLIAssetStylizer.IsSpecMetallic(assetPath);
+            bool isSpecMetallic = !isNormalMap && !isOcclusion && NKLIAssetStylizer.IsSpecMetallic(assetPath);
             bool srgbEncode = !isNormalMap && textureImporter.sRGBTexture && PlayerSettings.colorSpace == ColorSpace.Linear;
 
             // Regenerating mips here is load-bearing: the CPU-side mip levels
@@ -566,7 +425,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             RenderTexture refRTDst = RenderTexture.GetTemporary(rtDesc);
 
             if (!RenderStylized(texture, refRTDst, texture.width, texture.height, texture.mipmapCount,
-                isNormalMap, isSpecMetallic,
+                isNormalMap, isSpecMetallic, isOcclusion,
                 textureImporter.wrapMode == TextureWrapMode.Repeat, srgbEncode, assetPath))
             {
                 RenderTexture.ReleaseTemporary(refRTDst);
@@ -576,66 +435,15 @@ public class NKLITextureProcessor : AssetPostprocessor
                 return;
             }
 
-            // Allocate Native Arrays
-            NKLITextureProcessorArrayStorage.AllocateResources();
-
-
             // Only the base level is read back from the GPU; the lower mips
             // are rebuilt on the CPU from it, beyond the reach of per-mip
             // readback orientation and stride hazards
             NKLIAssetStylizer.ReportSubStage("Readback");
-            width = texture.width;
-            height = texture.height;
+            int width = texture.width;
+            int height = texture.height;
             bool readbackFailed = false;
             {
-                bool npotArray = false;
-                NativeArray<float> refArray;
-                switch ((int)(width * height * 4))
-                {
-                    case NKLITextureProcessorArrayStorage.size4096:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray4096;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size2048:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray2048;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size1024:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray1024;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size512:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray512;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size256:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray256;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size128:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray128;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size64:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray64;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size32:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray32;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size16:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray16;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size8:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray8;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size4:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray4;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size2:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray2;
-                        break;
-                    case NKLITextureProcessorArrayStorage.size1:
-                        refArray = NKLITextureProcessorArrayStorage.nativeArray1;
-                        break;
-                    default:
-                        refArray = new NativeArray<float>(width * height * 4, Allocator.Persistent);
-                        npotArray = true;
-                        break;
-                }
+                NativeArray<float> refArray = NKLITextureProcessorArrayStorage.GetArray(width * height * 4);
 
                 Texture2D intTex = new Texture2D(width, height, texture.format, false);
 
@@ -663,32 +471,14 @@ public class NKLITextureProcessor : AssetPostprocessor
                     Color[] processed = intTex.GetPixels(0);
                     Color[] original = texture.GetPixels(0);
 
-                    // Safety net for exotic backends: measure which orientation
-                    // correlates with the source and correct only on DECISIVE
-                    // evidence. Per-channel comparison, not luma: a normal
-                    // map's structure lives in its R/G slope channels while its
-                    // luma is nearly flat, and a luma metric there lets noise
-                    // cast the deciding vote and mirror good bakes
-                    float diffStraight = 0.0f;
-                    float diffFlipped = 0.0f;
-                    int stride = Mathf.Max(1, (width * height) / 16384);
-                    for (int p = 0; p < processed.Length; p += stride)
-                    {
-                        int row = p / width;
-                        int pf = (height - 1 - row) * width + (p - row * width);
-                        Color o = original[p];
-                        Color cs = processed[p];
-                        Color cf = processed[pf];
-                        diffStraight += Mathf.Abs(cs.r - o.r) + Mathf.Abs(cs.g - o.g) + Mathf.Abs(cs.b - o.b);
-                        diffFlipped += Mathf.Abs(cf.r - o.r) + Mathf.Abs(cf.g - o.g) + Mathf.Abs(cf.b - o.b);
-                    }
-                    if (diffFlipped < diffStraight * 0.8f)
-                    {
-                        Color[] flipped = new Color[processed.Length];
-                        for (int row = 0; row < height; row++)
-                            System.Array.Copy(processed, row * width, flipped, (height - 1 - row) * width, width);
-                        processed = flipped;
-                    }
+                    // No orientation vote: the chain's parity is deterministic,
+                    // and the preview window - unvoted, reading back the same
+                    // way - has always shown true. A per-texture content vote
+                    // here once mirrored individual maps of a family whenever
+                    // heavy stylization decorrelated a bake from its source
+                    // (normals under full facet flattening especially), and a
+                    // lone mirrored map splits the facet lattices apart in a
+                    // way no per-map correctness can excuse
 
                     // Spec/metallic maps keep their processed alpha so the
                     // facet sparkle can live in smoothness. Normal maps keep
@@ -699,8 +489,15 @@ public class NKLITextureProcessor : AssetPostprocessor
                     // visible in only one slope of the lighting. Only colour
                     // maps splice the original alpha back bit-for-bit
                     if (!isSpecMetallic && !isNormalMap)
-                        for (int p = 0; p < processed.Length; p++)
-                            processed[p].a = original[p].a;
+                    {
+                        Color[] proc = processed;
+                        Parallel.For(0, height, row =>
+                        {
+                            int end = row * width + width;
+                            for (int p = row * width; p < end; p++)
+                                proc[p].a = original[p].a;
+                        });
+                    }
                     texture.SetPixels(processed, 0);
 
                     // Box-filter the corrected base down the whole chain,
@@ -715,18 +512,26 @@ public class NKLITextureProcessor : AssetPostprocessor
                         int mw = Mathf.Max(1, pw / 2);
                         int mh = Mathf.Max(1, ph / 2);
                         Color[] level = new Color[mw * mh];
-                        for (int y = 0; y < mh; y++)
+
+                        // Rows are independent, so each level fans out across
+                        // the cores; levels stay sequential, each feeding the
+                        // next. The lambdas read locals, never the mutating
+                        // loop-carried variables
+                        Color[] src = prev;
+                        int sw = pw;
+                        int sh = ph;
+                        Parallel.For(0, mh, y =>
                         {
-                            int y0 = Mathf.Min(y * 2, ph - 1);
-                            int y1 = Mathf.Min(y * 2 + 1, ph - 1);
+                            int y0 = Mathf.Min(y * 2, sh - 1);
+                            int y1 = Mathf.Min(y * 2 + 1, sh - 1);
                             for (int x = 0; x < mw; x++)
                             {
-                                int x0 = Mathf.Min(x * 2, pw - 1);
-                                int x1 = Mathf.Min(x * 2 + 1, pw - 1);
-                                level[y * mw + x] = (prev[y0 * pw + x0] + prev[y0 * pw + x1] +
-                                    prev[y1 * pw + x0] + prev[y1 * pw + x1]) * 0.25f;
+                                int x0 = Mathf.Min(x * 2, sw - 1);
+                                int x1 = Mathf.Min(x * 2 + 1, sw - 1);
+                                level[y * mw + x] = (src[y0 * sw + x0] + src[y0 * sw + x1] +
+                                    src[y1 * sw + x0] + src[y1 * sw + x1]) * 0.25f;
                             }
-                        }
+                        });
                         // Unsharp the RGB so the crystalline character stays
                         // legible at distance; alpha keeps the plain box
                         // average and normal maps are left untouched. Deeper
@@ -736,7 +541,7 @@ public class NKLITextureProcessor : AssetPostprocessor
                         if (!isNormalMap && effectMipSharpen > 0.0f && mw >= 4 && mh >= 4)
                         {
                             Color[] sharp = new Color[mw * mh];
-                            for (int y = 0; y < mh; y++)
+                            Parallel.For(0, mh, y =>
                             {
                                 for (int x = 0; x < mw; x++)
                                 {
@@ -762,7 +567,7 @@ public class NKLITextureProcessor : AssetPostprocessor
                                         Mathf.Clamp01(p0.b + (p0.b - bb / 9.0f) * effectMipSharpen),
                                         p0.a);
                                 }
-                            }
+                            });
                             toStore = sharp;
                         }
 
@@ -774,8 +579,6 @@ public class NKLITextureProcessor : AssetPostprocessor
                 }
 
                 Object.DestroyImmediate(intTex);
-                if (npotArray)
-                    refArray.Dispose();
             }
 
 
@@ -818,7 +621,7 @@ public class NKLITextureProcessor : AssetPostprocessor
     // Shared by the import postprocessor and the preview window, so the two
     // can never drift apart. Returns false if the effect shaders are missing
     public static bool RenderStylized(Texture source, RenderTexture dest, int texWidth, int texHeight, int mipCount,
-        bool isNormalMap, bool isSpecMetallic, bool wraps, bool srgbEncode, string assetPath)
+        bool isNormalMap, bool isSpecMetallic, bool isOcclusion, bool wraps, bool srgbEncode, string assetPath)
     {
         if (!EnsureShaders())
             return false;
@@ -875,7 +678,7 @@ public class NKLITextureProcessor : AssetPostprocessor
         refRTSrc.filterMode = FilterMode.Trilinear;
         refRTSrc.GenerateMips();
 
-        bool isColour = !isNormalMap && !isSpecMetallic;
+        bool isColour = !isNormalMap && !isSpecMetallic && !isOcclusion;
         Vector4 texSize = new Vector4(texWidth, texHeight, 0.0f, 0.0f);
 
         if (!isSpecMetallic)
@@ -941,6 +744,7 @@ public class NKLITextureProcessor : AssetPostprocessor
             materialMux.SetFloat("_EdgeLo", isNormalMap ? effectEdgeLoNormal : effectEdgeLo);
             materialMux.SetFloat("_EdgeHi", isNormalMap ? effectEdgeHiNormal : effectEdgeHi);
             materialMux.SetFloat("_EdgeKeep", isNormalMap ? effectEdgeKeepNormal : effectEdgeKeep);
+            materialMux.SetFloat("_SharpenAmount", isColour ? effectPaintSharpen : 0.0f);
             materialMux.SetTexture("_PaintTex", refRTStroke);
             Graphics.Blit(refRTSrc, refRTIntPaint, materialMux, 2);
 
@@ -1008,19 +812,23 @@ public class NKLITextureProcessor : AssetPostprocessor
         }
 
         // Apply triangular facet filter. Colour maps take the full fill
-        // drift; spec/metallic maps a luminance-only whisper; normal maps a
-        // gentle per-facet tilt plus the full gasket shade — all on the same
-        // lattice and gasket hashes so every layer catches the light in step
+        // drift; spec/metallic and occlusion maps a luminance-only whisper;
+        // normal maps a gentle per-facet tilt plus the full gasket shade -
+        // all on the same lattice and gasket hashes so every layer catches
+        // the light in step
         NKLIAssetStylizer.ReportSubStage("Triangular facets");
         materialFacet.SetVector("_TexSize", texSize);
         materialFacet.SetFloat("_Density", effectFacetDensity);
-        materialFacet.SetFloat("_Jitter", isColour ? effectFacetJitter : (isSpecMetallic ? effectSpecMetJitter : 0.0f));
+        materialFacet.SetFloat("_Jitter", isColour ? effectFacetJitter : (isNormalMap ? 0.0f : effectSpecMetJitter));
         materialFacet.SetFloat("_HueJitter", isColour ? effectFacetHueJitter : 0.0f);
         materialFacet.SetFloat("_SatJitter", isColour ? effectFacetSatJitter : 0.0f);
         materialFacet.SetFloat("_FractalChance", effectFractalChance);
-        materialFacet.SetFloat("_FractalShade", isSpecMetallic ? effectSpecMetFractalShade : effectFractalShade);
+        materialFacet.SetFloat("_FractalShade", isNormalMap ? effectNormalFractalShade : effectFractalShade);
+        materialFacet.SetFloat("_FractalShadeDark", isColour ? effectFractalShadeDark : effectFractalShade);
         materialFacet.SetFloat("_NormalPerturb", isNormalMap ? effectNormalPerturb : 0.0f);
+        materialFacet.SetFloat("_NormalDeviation", effectNormalDeviation);
         materialFacet.SetFloat("_NormalFlatten", effectNormalFacetFlatten);
+        materialFacet.SetFloat("_NormalFlatBase", effectNormalFlatBase);
         materialFacet.SetFloat("_LatticeWarp", effectLatticeWarp);
         materialFacet.SetFloat("_Wrap", wraps ? 1.0f : 0.0f);
         materialFacet.SetFloat("_Dispersion", isColour ? effectDispersion : 0.0f);
@@ -1045,9 +853,9 @@ public class NKLITextureProcessor : AssetPostprocessor
         refRTMask.GenerateMips();
 
         // Composite the base and facets through the softened mask. Colour
-        // maps blend between the two paint strengths; spec/metallic and
-        // normal maps blend facets over their single base, with the normal
-        // facets swept in only where the crystal mask pools
+        // maps blend between the two paint strengths; normal and occlusion
+        // maps blend facets over their single base on the lifted crystal
+        // floor; spec/metallic maps take the facet layer outright
         RenderTexture refRTBase = refRTIntPaint;
         materialMux.SetTexture("_PaintTex", refRTBase);
         materialMux.SetTexture("_PaintStrongTex", isColour ? refRTIntPaintStrong : refRTBase);
@@ -1057,8 +865,10 @@ public class NKLITextureProcessor : AssetPostprocessor
         materialMux.SetFloat("_MaskHi", effectMaskHi);
         materialMux.SetFloat("_MaskBlur", effectMaskBlur);
         materialMux.SetFloat("_MaskSoften", effectMaskSoften);
-        materialMux.SetFloat("_CrystalFloor", isNormalMap ? effectNormalCrystalFloor : 0.0f);
-        materialMux.SetFloat("_CrystalMax", isNormalMap ? effectNormalCrystalMax : effectCrystalMax);
+        materialMux.SetFloat("_CrystalFloor", isSpecMetallic ? effectSpecMetCrystal :
+            (isColour ? 0.0f : (isNormalMap ? effectNormalCrystalFloor : effectOccCrystalFloor)));
+        materialMux.SetFloat("_CrystalMax", isSpecMetallic ? effectSpecMetCrystal :
+            (isColour ? effectCrystalMax : effectNormalCrystalMax));
         materialMux.SetFloat("_GuardLo", effectGuardLo);
         materialMux.SetFloat("_GuardHi", effectGuardHi);
         Graphics.Blit(refRTSrc, refRTInt, materialMux, 1);
@@ -1089,8 +899,14 @@ public class NKLITextureProcessor : AssetPostprocessor
         {
             // Ungraded classes take an equalizing copy so both paths reach the
             // final blit at the same generation; skipping it lands spec and
-            // normal maps one row-inversion adrift of the colour maps
-            Graphics.Blit(refRTInt, refRTGrade, materialFlip);
+            // normal maps one row-inversion adrift of the colour maps. Normal
+            // maps take the copy through the mux's row-flipping pass: the
+            // class alignment test proved their branch lands one further
+            // inversion adrift, mirroring whole bakes against their siblings
+            if (isNormalMap)
+                Graphics.Blit(refRTInt, refRTGrade, materialMux, 4);
+            else
+                Graphics.Blit(refRTInt, refRTGrade, materialFlip);
             refRTGraded = refRTGrade;
         }
 

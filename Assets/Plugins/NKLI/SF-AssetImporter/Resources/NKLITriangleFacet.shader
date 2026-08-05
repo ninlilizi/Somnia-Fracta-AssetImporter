@@ -46,8 +46,11 @@ Shader "Hidden/NKLITriangleFacet"
             float _SatJitter;
             float _FractalChance;
             float _FractalShade;
+            float _FractalShadeDark;
             float _NormalPerturb;
+            float _NormalDeviation;
             float _NormalFlatten;
+            float _NormalFlatBase;
             float _LatticeWarp;
             float _Wrap;
             float _Dispersion;
@@ -103,6 +106,23 @@ Shader "Hidden/NKLITriangleFacet"
                     amp *= 0.5;
                 }
                 return v;
+            }
+
+            // Virtual light convention shared by every layer's bake: high
+            // and a touch left, the way lights tend to hang in a scene
+            static const float2 facetLightDir = float2(-0.349, 0.937);
+
+            // The facet's lean in slope space: a smooth low-frequency field
+            // sampled at the centroid, so neighbouring facets lean nearly
+            // together, plus each facet's private stray scaled by
+            // _NormalDeviation. The normal bake tilts by this lean and the
+            // colour bake shades by its projection onto the virtual light,
+            // so highlight and fill tell one story per triangle
+            float2 FacetLean(float2 centroidUV, float h1, float h2)
+            {
+                float2 field = float2(fbm(centroidUV, 3.0, _Wrap),
+                                      fbm(centroidUV + 3.33, 3.0, _Wrap)) - 0.47;
+                return field * 2.0 + (float2(h1, h2) - 0.5) * 2.0 * _NormalDeviation;
             }
 
             fixed4 frag (v2f i) : SV_Target
@@ -186,9 +206,9 @@ Shader "Hidden/NKLITriangleFacet"
                 // and the result re-encodes into the layout it arrived in
                 if (_NormalPerturb > 0.0)
                 {
-                    float2 tilt = (float2(h1, h2) - 0.5) * 2.0 * _NormalPerturb;
+                    float2 tilt = FacetLean(facetUV, h1, h2) * _NormalPerturb;
                     if (holeDepth > 0.0)
-                        tilt += (float2(h3, h4) - 0.5) * 2.0 * _NormalPerturb / holeDepth;
+                        tilt += (float2(h3, h4) - 0.5) * 2.0 * _NormalPerturb * _NormalDeviation / holeDepth;
 
                     float4 pix = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
                     float3 nPix;
@@ -198,6 +218,11 @@ Shader "Hidden/NKLITriangleFacet"
                     nAvg.xy = float2(col.r * col.a, col.g) * 2.0 - 1.0;
                     nAvg.z = sqrt(saturate(1.0 - dot(nAvg.xy, nAvg.xy)));
 
+                    // Flat-base option: the facet plane abandons the
+                    // source's melted orientation for the unbent surface,
+                    // so facet orientation is purely the lattice's lean
+                    nAvg = normalize(lerp(nAvg, float3(0.0, 0.0, 1.0), _NormalFlatBase));
+
                     float3 n = normalize(lerp(nPix, nAvg, _NormalFlatten));
                     n.xy += tilt;
                     n = normalize(n);
@@ -205,7 +230,11 @@ Shader "Hidden/NKLITriangleFacet"
                     float2 enc = n.xy * 0.5 + 0.5;
                     if (holeDepth > 0.0)
                     {
-                        float dir = hash21(hp + 113.7) < 0.5 ? -1.0 : 1.0;
+                        // Imprint direction shared with the colour branch's
+                        // gasket shade: the child's own lean toward the
+                        // virtual light, so a child that brightens on the
+                        // albedo presses its slopes the same way here
+                        float dir = dot(float2(h3, h4) - 0.5, facetLightDir) >= 0.0 ? 1.0 : -1.0;
                         enc *= 1.0 + dir * _FractalShade / holeDepth;
                     }
                     return pix.a < 0.999
@@ -234,12 +263,27 @@ Shader "Hidden/NKLITriangleFacet"
                 hsv.x = frac(hsv.x + (h1 - 0.5) * _HueJitter);
                 hsv.y = saturate(hsv.y * (1.0 + (h2 - 0.5) * 2.0 * _SatJitter));
                 col.rgb = hsv2rgb(hsv);
-                col.rgb *= 1.0 + (h3 - 0.5) * 2.0 * _Jitter;
 
+                // Luminance drift follows the facet's lean toward the
+                // virtual light - the very lean the normal bake tilts by -
+                // so the facets that brighten here are the ones whose
+                // normals catch a real light in-engine. Doubled because the
+                // field concentrates near the middle of its range, unlike
+                // the uniform hash the drift once drew from
+                col.rgb *= 1.0 + dot(FacetLean(facetUV, h1, h2), facetLightDir) * 2.0 * _Jitter;
+
+                // Asymmetric shade: lightening children keep the full drift,
+                // darkening children take their own gentler strength - it is
+                // the sunken triangles that turn gaskets from flavour to
+                // meal. Multiplicative in linear space, so the perceptual
+                // step is uniform across bright and dim fills alike. The
+                // side of the light a child shades on follows its own tilt
+                // in the normal bake, keeping the layers in step
                 if (holeDepth > 0.0)
                 {
-                    float dir = hash21(hp + 113.7) < 0.5 ? -1.0 : 1.0;
-                    col.rgb *= 1.0 + dir * _FractalShade / holeDepth;
+                    float dir = dot(float2(h3, h4) - 0.5, facetLightDir) >= 0.0 ? 1.0 : -1.0;
+                    float shade = dir < 0.0 ? _FractalShadeDark : _FractalShade;
+                    col.rgb *= 1.0 + dir * shade / holeDepth;
                 }
 
                 // Sparkle: a sparse hashed minority of facets spike their

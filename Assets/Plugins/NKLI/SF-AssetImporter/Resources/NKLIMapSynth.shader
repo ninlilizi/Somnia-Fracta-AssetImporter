@@ -32,18 +32,6 @@ Shader "Hidden/NKLIMapSynth"
             return o;
         }
 
-        // The occlusion pass bypasses the stylization chain and its lone
-        // row-flipping composite, so the write is mirrored here instead to
-        // pair with the top-down readback
-        v2f vertFlip (appdata v)
-        {
-            v2f o;
-            o.vertex = UnityObjectToClipPos(v.vertex);
-            o.uv.x = v.uv.x;
-            o.uv.y = 1 - v.uv.y;
-            return o;
-        }
-
         sampler2D _MainTex;
         sampler2D _NormalTex;
         float4 _NormalSize;
@@ -177,11 +165,12 @@ Shader "Hidden/NKLIMapSynth"
 
         // Pass 2: occlusion. Crevices found in the normal field darken, joined
         // by a gentle pooled-shadow term where the albedo sits darker than its
-        // own neighbourhood
+        // own neighbourhood. Straight UVs like its siblings: the bake rides
+        // the stylization chain, whose composite supplies the lone row flip
         Pass
         {
             CGPROGRAM
-            #pragma vertex vertFlip
+            #pragma vertex vertStraight
             #pragma fragment frag
             #pragma target 3.0
 

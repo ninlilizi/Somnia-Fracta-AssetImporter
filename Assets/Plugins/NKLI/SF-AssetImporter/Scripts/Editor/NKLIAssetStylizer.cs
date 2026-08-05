@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
-public class NKLIAssetStylizer : MonoBehaviour
+public static class NKLIAssetStylizer
 {
     // This string when found in the asset path will mark the asset for stylization
     public const string targetString = "-style-sf";
@@ -76,11 +76,12 @@ public class NKLIAssetStylizer : MonoBehaviour
         return occlusionTextures.Contains(AssetDatabase.AssetPathToGUID(path));
     }
 
-    // Would this texture import untouched? Occlusion and name-excluded roles
-    // pass through pristine, as do importer types outside Default/NormalMap
+    // Would this texture import untouched? Name-excluded roles pass through
+    // pristine (unless classified occlusion, which stylizes and outranks the
+    // name), as do importer types outside Default/NormalMap
     static bool ImportsPristine(string path)
     {
-        if (IsNameExcluded(path) || IsOcclusion(path) || IsGeneratedOutput(path))
+        if ((IsNameExcluded(path) && !IsOcclusion(path)) || IsGeneratedOutput(path))
             return true;
 
         TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;
@@ -183,11 +184,18 @@ public class NKLIAssetStylizer : MonoBehaviour
     // a marked texture, so the ledger tracks the committed artifact exactly.
     // Worker processes must not write: their ledger copy would race the main
     // editor's file; ReconcileLedger settles their imports instead
+    // Textures whose artifact was stylized since the current bulk run began,
+    // whether by the run's own imports or by a dependency sweep the run
+    // provoked - the loop consults this so no texture bakes twice in one run
+    static readonly HashSet<string> bakedThisRun = new HashSet<string>();
+
     public static void RecordStylized(string assetPath)
     {
         if (AssetDatabase.IsAssetImportWorkerProcess())
             return;
 
+        if (bulkRunActive)
+            bakedThisRun.Add(assetPath);
         ledgerTouchedThisBatch.Add(assetPath);
         string guid = AssetDatabase.AssetPathToGUID(assetPath);
         if (string.IsNullOrEmpty(guid))
@@ -532,6 +540,11 @@ public class NKLIAssetStylizer : MonoBehaviour
     }
 
 
+    // Every DisplayCancelableProgressBar call repaints the dialogue
+    // synchronously; unthrottled per-stage updates spend longer painting
+    // the bar than baking the textures
+    static double lastBarUpdate;
+
     // Progress dialogue; returns true once the user has pressed cancel
     static bool ReportStage(string stage)
     {
@@ -541,14 +554,21 @@ public class NKLIAssetStylizer : MonoBehaviour
             progressTitle + " — " + stage,
             "(" + progressIndex + "/" + progressCount + ") " + progressName,
             progress);
+        lastBarUpdate = EditorApplication.timeSinceStartup;
         return progressCancelled;
     }
 
-    // Called by NKLITextureProcessor to show the pass currently running on a texture
+    // Called by NKLITextureProcessor to show the pass currently running on a
+    // texture. Throttled: cancel stays responsive through the unthrottled
+    // per-texture ReportStage
     public static void ReportSubStage(string subStage)
     {
         if (!progressActive)
             return;
+
+        if (EditorApplication.timeSinceStartup - lastBarUpdate < 0.1)
+            return;
+        lastBarUpdate = EditorApplication.timeSinceStartup;
 
         progressStage = "Stylizing — " + subStage;
         float progress = progressCount > 0 ? (float)progressIndex / progressCount : 0.0f;
@@ -568,6 +588,16 @@ public class NKLIAssetStylizer : MonoBehaviour
             abortWindow.Close();
             abortWindow = null;
         }
+        if (autoRefreshHeld)
+        {
+            autoRefreshHeld = false;
+            AssetDatabase.AllowAutoRefresh();
+        }
+        if (refreshModeForced)
+        {
+            refreshModeForced = false;
+            EditorSettings.refreshImportMode = previousRefreshMode;
+        }
         NKLITextureProcessorArrayStorage.ReleaseResources();
         Debug.Log(message);
     }
@@ -576,6 +606,22 @@ public class NKLIAssetStylizer : MonoBehaviour
     // When false, the run consults the stylized ledger and touches only
     // textures whose artifact is missing or baked under stale settings
     static bool runForceAll;
+
+    // Auto-refresh is held for the run's duration: registering the fresh
+    // dependency hashes makes every marked artifact stale at once, and an
+    // editor refresh slipping into a yielded frame between the scan and our
+    // own controlled imports would reimport the whole flock through import
+    // workers - GPU-less, so unstylized - only for the loop to bake each
+    // one again moments later
+    static bool autoRefreshHeld;
+
+    // The pending invalidation can also be swept up the moment ANY import
+    // runs, ours included, and out-of-process sweeps decline the GPU chain.
+    // The sweep cannot be prevented, so it is made harmless: imports are
+    // forced in-process for the run (every sweep bake is then a true bake),
+    // and bakedThisRun lets the loop skip whatever a sweep already settled
+    static bool refreshModeForced;
+    static AssetDatabase.RefreshImportMode previousRefreshMode;
 
     // Progress state must be live before the window opens, or its first OnGUI
     // sees a dormant run and retires itself at birth
@@ -587,6 +633,18 @@ public class NKLIAssetStylizer : MonoBehaviour
         progressCancelled = false;
         progressStage = "Preparing";
         progressName = "";
+        bakedThisRun.Clear();
+        if (!autoRefreshHeld)
+        {
+            AssetDatabase.DisallowAutoRefresh();
+            autoRefreshHeld = true;
+        }
+        if (!refreshModeForced)
+        {
+            previousRefreshMode = EditorSettings.refreshImportMode;
+            EditorSettings.refreshImportMode = AssetDatabase.RefreshImportMode.InProcess;
+            refreshModeForced = true;
+        }
         abortWindow = NKLIStylizeAbortWindow.Open();
         StartRoutine(ScanMaterials());
     }
@@ -608,9 +666,8 @@ public class NKLIAssetStylizer : MonoBehaviour
     // a seeding and repair pass; day-to-day upkeep happens live as materials import
     // Only BeginRun clears the cancel flag: a phase clearing it on entry would
     // swallow an abort clicked at the boundary between two phases
-    public static IEnumerator ScanMaterials()
+    static IEnumerator ScanMaterials()
     {
-        progressActive = true;
         progressIndex = 0;
         progressCount = 0;
         progressName = "Searching asset database";
@@ -656,13 +713,23 @@ public class NKLIAssetStylizer : MonoBehaviour
         Debug.Log("Specular/metallic textures identified: " + classifiedTextures.Count +
             "; occlusion textures identified: " + occlusionTextures.Count);
         RegisterRunDependency();
-        StartRoutine(FindAssetsByType<Texture>());
+        StartRoutine(GatherTextures());
     }
 
 
-    public static IEnumerator TextureProcessor(List<string> textures)
+    static IEnumerator TextureProcessor(List<string> textures)
     {
         yield return null;
+
+        // Imports run back to back inside a time budget: an editor frame
+        // between every texture costs more than the smaller bakes themselves.
+        // A per-texture GC sweep once dominated the run, but the pixel
+        // buffers of each import pile onto the last until collected - so the
+        // collector fires on genuine heap pressure, with a periodic sweep as
+        // the floor. A parade of large textures still collects per texture;
+        // a run of small ones no longer pays for sweeps it does not need
+        const long gcPressureBytes = 1L << 30;
+        double lastYield = EditorApplication.timeSinceStartup;
 
         progressCount = textures.Count;
         for (int i = 0; i < textures.Count; i++)
@@ -670,6 +737,12 @@ public class NKLIAssetStylizer : MonoBehaviour
             string texture = textures[i];
             progressIndex = i + 1;
             progressName = texture;
+
+            // A dependency sweep provoked by an earlier import may have baked
+            // this texture already - in-process, so it is a true bake - and
+            // baking it a second time in the same run buys nothing
+            if (bakedThisRun.Contains(texture))
+                continue;
 
             if (ReportStage("Stylizing"))
             {
@@ -682,10 +755,15 @@ public class NKLIAssetStylizer : MonoBehaviour
             // main process, where the GPU lives
             AssetDatabase.ImportAsset(texture, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
 
-            // Clean memory and wait untill next frame
-            EditorApplication.QueuePlayerLoopUpdate();
-            yield return null;
-            GC.Collect();
+            if ((i & 7) == 7 || GC.GetTotalMemory(false) > gcPressureBytes)
+                GC.Collect();
+
+            if (EditorApplication.timeSinceStartup - lastYield > 0.5)
+            {
+                EditorApplication.QueuePlayerLoopUpdate();
+                yield return null;
+                lastYield = EditorApplication.timeSinceStartup;
+            }
 
             if (progressCancelled)
             {
@@ -694,13 +772,13 @@ public class NKLIAssetStylizer : MonoBehaviour
             }
         }
 
+        GC.Collect();
         FinishRun("Finished processing " + textures.Count + " textures");
     }
 
 
-    public static IEnumerator FindAssetsByType<T>() where T : UnityEngine.Object
+    static IEnumerator GatherTextures()
     {
-        progressActive = true;
         progressIndex = 0;
         progressCount = 0;
         progressName = "Searching asset database";
@@ -712,7 +790,7 @@ public class NKLIAssetStylizer : MonoBehaviour
         List<string> assets = new List<string>();
         int alreadyStylized = 0;
         string currentHash = CurrentFingerprintHash();
-        string[] guids = AssetDatabase.FindAssets(string.Format("t:{0}", typeof(T).ToString().Replace("UnityEngine.", "")));
+        string[] guids = AssetDatabase.FindAssets("t:Texture");
         progressCount = guids.Length;
         for (int i = 0; i < guids.Length; i++)
         {

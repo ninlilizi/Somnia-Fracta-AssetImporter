@@ -69,6 +69,7 @@ Shader "Hidden/NKLIMuxPaintPixel"
         float _EdgeLo;
         float _EdgeHi;
         float _EdgeKeep;
+        float _SharpenAmount;
         float2 _SeamBand;
 
         float hash21(float2 p)
@@ -230,6 +231,13 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 return tex2Dlod(_MainTex, float4(p, 0.0, 0.0)).rgb;
             }
 
+            float3 SamplePaint(float2 uv, float2 off)
+            {
+                float2 p = uv + off;
+                p = _Wrap > 0.5 ? frac(p) : saturate(p);
+                return tex2Dlod(_PaintTex, float4(p, 0.0, 0.0)).rgb;
+            }
+
             fixed4 frag (v2f i) : SV_Target
             {
                 float2 t = 1.0 / _TexSize.xy;
@@ -261,6 +269,17 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 // are sampled straight. Every blit inverts rows: adding or
                 // removing a generation upstream must flip this sampling
                 float4 paint = tex2Dlod(_PaintTex, float4(i.uv, 0.0, 0.0));
+
+                // Unsharp the paint against its 4-neighbour average: the
+                // Kuwahara's soft plateau borders regain their bite without
+                // resurrecting the raw texture the paint unified
+                if (_SharpenAmount > 0.0)
+                {
+                    float3 nb = SamplePaint(i.uv, float2(-t.x, 0.0)) + SamplePaint(i.uv, float2(t.x, 0.0)) +
+                                SamplePaint(i.uv, float2(0.0, -t.y)) + SamplePaint(i.uv, float2(0.0, t.y));
+                    paint.rgb = saturate(paint.rgb + (paint.rgb - nb * 0.25) * _SharpenAmount);
+                }
+
                 float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
                 return lerp(paint, src, keep);
             }
@@ -290,6 +309,25 @@ Shader "Hidden/NKLIMuxPaintPixel"
                 float4 d = tex2Dlod(_MainTex, float4(1.0 - i.uv.x, 1.0 - i.uv.y, 0.0, 0.0));
 
                 return lerp(lerp(a, b, kx), lerp(c, d, kx), ky);
+            }
+            ENDCG
+        }
+
+        // Pass 4: row-flipped copy, the normal branch's equalizer. The
+        // class alignment test proved the normal path lands one row
+        // inversion adrift of its sibling classes, mirroring whole bakes;
+        // taking the tail's equalizing copy through this flip settles the
+        // debt so all four classes read back in one orientation
+        Pass
+        {
+            CGPROGRAM
+            #pragma vertex vertFlip
+            #pragma fragment frag
+            #pragma target 3.0
+
+            fixed4 frag (v2f i) : SV_Target
+            {
+                return tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
             }
             ENDCG
         }

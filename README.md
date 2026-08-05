@@ -15,14 +15,15 @@ This is intended for use in my own games, however it shows off how to perform so
 ## Effect
 
 - **Painterly base** - Kuwahara oil-paint filtering across the entire surface, deepening where the crystal effect recedes.
-- **Triangular facets** - an organically warped equilateral-triangle mosaic; facets are area-averaged fills with per-facet hue/saturation/luminance drift. No outlines.
+- **Triangular facets** - an organically warped equilateral-triangle mosaic; facets are area-averaged fills with per-facet hue/saturation/luminance drift. No outlines. The luminance drift follows each facet's lean toward a fixed virtual light - the same lean the normal maps tilt by - so baked shading, spec shimmer and real in-engine highlights agree facet for facet.
 - **Sierpinski gaskets** - a hashed minority of facets subdivide three generations deep, children shaded lighter or darker.
 - **Julia crystallization mask** - a tiling orbit-trapped Julia set decides where facets emerge; mip-blurred for wide, gentle blends. Seeded per folder, so all maps of one asset align and every folder is a unique variation.
 - **Gloaming grade** - soft mip-glow, lifted blacks, dusk-violet shadows, pale-gold highlights.
-- **Spec/metallic shimmer** - textures assigned to `_MetallicGlossMap`/`_SpecGlossMap` material slots receive a subtle facet-aligned luminance drift (no hue, paint or grade), so the crystal facets catch the light.
+- **Spec/metallic shimmer** - textures assigned to `_MetallicGlossMap`/`_SpecGlossMap` material slots receive a subtle facet-aligned luminance drift (no hue, paint or grade) across their whole surface, sharing the normals' crystal sweep and gasket shade, so the facets catch the light everywhere and deepen where the mask pools.
+- **Occlusion wash** - textures seated in `_OcclusionMap` slots take the painterly base plus the facet lattice's luminance whisper and gasket imprint - no hue drift, no grade - so baked shading crystallizes in step with the rest. Classification outranks name exclusion; masks not seated in an occlusion slot still import untouched.
 - Normal maps receive the painterly pass plus a gentle facet-aligned normal tilt (no flat faceting), so facets and gaskets catch real light. Detected via importer type on every import — no scan needed.
 - **Safety rails** - a content guard suppresses facets that stray across texture-atlas islands or gutters, and alpha channels pass through bit-identical to the source.
-- **Map synthesis** - right-click a material to conjure specular, metallic and occlusion maps it lacks, derived purely from its albedo and normal content: spec/smoothness from luminance, chroma and crevice shading, metallic from bright low-chroma response, occlusion from multi-scale cavity detection on the normal field. Spec and metallic are baked through the same facet shimmer existing maps of their class receive; occlusion stays pure.
+- **Map synthesis** - right-click a material to conjure specular, metallic and occlusion maps it lacks, derived purely from its albedo and normal content: spec/smoothness from luminance, chroma and crevice shading, metallic from bright low-chroma response, occlusion from multi-scale cavity detection on the normal field. All three are baked through the same type-specific stylization existing maps of their class receive - occlusion included, wearing the painterly wash and facet lattice.
 
 ## Requirements
 
@@ -35,9 +36,9 @@ This is intended for use in my own games, however it shows off how to perform so
 3. For a bulk pass with progress dialogue and Cancel: **Tools → NKLI → Bulk Stylize Assets → Somnia-Fracta - Apply** re-bakes only textures whose bake is missing or stale (a Library-side ledger tracks finished work); **Re-Apply All** re-bakes unconditionally. Textures that lose their stylization - a package reimported over the top, the marker removed and the texture reimported, or an import that ran without GPU access - fall out of the ledger automatically, so the next Apply sweeps them up.
 4. Spec/metallic assignments are tracked live: importing or saving a material updates a classification database (cached in Library), and only the textures whose role changed re-bake automatically. The bulk run also rescans every material as a seeding/repair pass.
 5. Deleting the Library rebuilds textures unstylized (the effect's caches burn with it) - the tool detects the fresh Library at startup and offers to run the bulk pass; accept, or run the menu manually.
-6. To synthesize spec/metallic/occlusion maps for a material: right-click the material asset and choose **NKLI → Somnia Fracta - Generate Spec-Metal-Occlusion Maps**. The maps are derived from the albedo and normal only, saved as `<albedo>_specular` / `_metallic` / `_occlusion` in an `sf-generated` folder beside the albedo, assigned to the material's slots automatically, and excluded from import stylization (they are already finished bakes).
+6. To synthesize spec/metallic/occlusion maps for a material: right-click the material asset and choose **NKLI → Somnia Fracta - Generate Spec-Metal-Occlusion Maps**. The maps are derived from the albedo and normal only, saved as `<albedo>_specular` / `_metallic` / `_occlusion` in an `sf-generated` folder beside the albedo, assigned to the material's slots automatically, and excluded from import stylization (they are already finished bakes). Setting changes therefore never touch existing generated maps - **Tools → NKLI → Bulk Stylize Assets → Somnia-Fracta - Regenerate Synthesized Maps** re-synthesizes every material currently wearing them under the current settings.
 
-`/hdr`, `.exr` and `.fbx` assets are excluded.
+`/hdr`, `.exr` and `.fbx` assets are excluded. Raw sourcing for synthesis and previews reads `.png`, `.jpg` and `.tga` files directly.
 
 ## Tuning
 
@@ -47,7 +48,7 @@ All dials are `const` values at the top of `Scripts/Editor/NKLITextureProcessor.
 
 - `Scripts/Editor/NKLIAssetStylizer.cs` - bulk menu, progress dialogue, coroutine pump, custom-dependency registration.
 - `Scripts/Editor/NKLITextureProcessor.cs` - `AssetPostprocessor` performing the GPU pass chain; all tuning constants.
-- `Scripts/Editor/NKLIMapSynthesizer.cs` - material right-click synthesis of spec/metallic/occlusion maps.
+- `Scripts/Editor/NKLIMapSynthesizer.cs` - material right-click synthesis of spec/metallic/occlusion maps; TGA reader.
 - `Resources/NKLIMapSynth.shader` - spec/metallic/occlusion synthesis from albedo and normal content.
 - `Resources/NKLITriangleFacet.shader` - facet mosaic and Sierpinski subdivision.
 - `Resources/NKLIMuxPaintPixel.shader` - Julia mask generation and composite.

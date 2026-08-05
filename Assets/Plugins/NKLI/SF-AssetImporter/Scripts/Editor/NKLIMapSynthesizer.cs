@@ -10,10 +10,11 @@ using Object = UnityEngine.Object;
 
 // Synthesizes specular, metallic and occlusion maps for a material from its
 // albedo and normal content alone, invoked from the material's right-click
-// menu. Spec and metallic bakes pass through the same type-specific
-// stylization an existing map of their class receives; occlusion is left
-// pure, as imported occlusion maps are. Results land in an sf-generated
-// folder beside the albedo, import pristine, and are bound to the material
+// menu. All three bakes pass through the same type-specific stylization an
+// existing map of their class receives - occlusion takes the painterly wash
+// plus the facet lattice, as imported occlusion maps now do. Results land in
+// an sf-generated folder beside the albedo, import pristine, and are bound
+// to the material
 public static class NKLIMapSynthesizer
 {
     // Specular intensity: a luminance curve swept between floor and ceiling,
@@ -49,9 +50,13 @@ public static class NKLIMapSynthesizer
     static readonly string[] albedoProperties = { "_MainTex", "_BaseMap", "_BaseColorMap" };
     static readonly string[] normalProperties = { "_BumpMap", "_NormalMap" };
 
-    const string menuPath = "Assets/NKLI/Somnia Fracta - Generate Spec-Metal-Occlusion Maps";
+    // Slots the generator fills; a material carrying a generated bake in any
+    // of them is a regeneration target
+    static readonly string[] generatedSlotProperties = { "_SpecGlossMap", "_MetallicGlossMap", "_OcclusionMap" };
 
-    static Shader shaderSynth;
+    const string menuPath = "Assets/NKLI/Somnia Fracta - Generate Spec-Metal-Occlusion Maps";
+    const string regenMenuPath = "Tools/NKLI/Bulk Stylize Assets/Somnia-Fracta - Regenerate Synthesized Maps";
+
     static Material materialSynth;
 
     static bool EnsureSynthShader()
@@ -59,7 +64,7 @@ public static class NKLIMapSynthesizer
         if (materialSynth != null)
             return true;
 
-        shaderSynth = NKLITextureProcessor.FindShaderRobust("Hidden/NKLIMapSynth", "NKLIMapSynth");
+        Shader shaderSynth = NKLITextureProcessor.FindShaderRobust("Hidden/NKLIMapSynth", "NKLIMapSynth");
         if (shaderSynth == null)
             return false;
 
@@ -80,6 +85,65 @@ public static class NKLIMapSynthesizer
         if (materials.Length == 0)
             return;
 
+        RunGeneration(materials);
+    }
+
+    // Re-runs synthesis for every material wearing a generated bake, so
+    // stylization and synthesis setting changes propagate to the finished
+    // bakes the importer deliberately never touches
+    [MenuItem(regenMenuPath)]
+    static void RegenerateAll()
+    {
+        List<Material> targets = new List<Material>();
+        string[] guids = AssetDatabase.FindAssets("t:Material");
+        try
+        {
+            for (int i = 0; i < guids.Length; i++)
+            {
+                if (i % 50 == 0)
+                    EditorUtility.DisplayProgressBar("Somnia Fracta",
+                        "Scanning materials for generated maps", (float)i / guids.Length);
+
+                Material mat = AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(guids[i]));
+                if (mat != null && HasGeneratedAssignment(mat))
+                    targets.Add(mat);
+            }
+        }
+        finally
+        {
+            EditorUtility.ClearProgressBar();
+        }
+
+        if (targets.Count == 0)
+        {
+            Debug.Log("Somnia Fracta: no materials carry generated maps; nothing to regenerate.");
+            return;
+        }
+
+        RunGeneration(targets.ToArray());
+        Debug.Log("Somnia Fracta: regenerated maps for " + targets.Count + " materials.");
+    }
+
+    static bool HasGeneratedAssignment(Material mat)
+    {
+        foreach (string property in generatedSlotProperties)
+        {
+            if (!mat.HasProperty(property))
+                continue;
+
+            Texture tex = mat.GetTexture(property);
+            if (tex == null)
+                continue;
+
+            string texPath = AssetDatabase.GetAssetPath(tex);
+            if (!string.IsNullOrEmpty(texPath) && NKLIAssetStylizer.IsGeneratedOutput(texPath))
+                return true;
+        }
+        return false;
+    }
+
+    static void RunGeneration(Material[] materials)
+    {
         if (!EnsureSynthShader())
         {
             Debug.LogWarning("Somnia Fracta: synthesis shader unavailable; no maps generated.");
@@ -105,6 +169,7 @@ public static class NKLIMapSynthesizer
         }
     }
 
+
     static Texture FindSlot(Material mat, string[] properties)
     {
         foreach (string property in properties)
@@ -125,6 +190,8 @@ public static class NKLIMapSynthesizer
     static Texture2D TryLoadRaw(string path, bool linear, TextureWrapMode wrapMode)
     {
         string ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
+        if (ext == ".tga")
+            return LoadTga(System.IO.File.ReadAllBytes(path), linear, wrapMode);
         if (ext != ".png" && ext != ".jpg" && ext != ".jpeg")
             return null;
 
@@ -137,6 +204,97 @@ public static class NKLIMapSynthesizer
             Object.DestroyImmediate(tex);
             return null;
         }
+        tex.wrapMode = wrapMode;
+        return tex;
+    }
+
+    // Minimal TGA reader - uncompressed and RLE truecolour at 24/32 bits,
+    // the shapes Substance and common tools export. ImageConversion cannot
+    // decode TGA, and these projects carry whole families of them
+    public static Texture2D LoadTga(byte[] bytes, bool linear, TextureWrapMode wrapMode)
+    {
+        if (bytes == null || bytes.Length < 18)
+            return null;
+
+        int idLength = bytes[0];
+        int imageType = bytes[2];
+        if (bytes[1] != 0 || (imageType != 2 && imageType != 10))
+            return null;
+
+        int width = bytes[12] | (bytes[13] << 8);
+        int height = bytes[14] | (bytes[15] << 8);
+        int bpp = bytes[16];
+        bool topOrigin = (bytes[17] & 0x20) != 0;
+        if (width <= 0 || height <= 0 || (bpp != 24 && bpp != 32))
+            return null;
+
+        Color32[] pixels = new Color32[width * height];
+        int src = 18 + idLength;
+        try
+        {
+            if (imageType == 2)
+            {
+                for (int i = 0; i < pixels.Length; i++)
+                {
+                    byte b = bytes[src++];
+                    byte g = bytes[src++];
+                    byte r = bytes[src++];
+                    byte a = bpp == 32 ? bytes[src++] : (byte)255;
+                    pixels[i] = new Color32(r, g, b, a);
+                }
+            }
+            else
+            {
+                int i = 0;
+                while (i < pixels.Length)
+                {
+                    byte packet = bytes[src++];
+                    int count = (packet & 0x7F) + 1;
+                    if ((packet & 0x80) != 0)
+                    {
+                        byte b = bytes[src++];
+                        byte g = bytes[src++];
+                        byte r = bytes[src++];
+                        byte a = bpp == 32 ? bytes[src++] : (byte)255;
+                        Color32 run = new Color32(r, g, b, a);
+                        for (int k = 0; k < count && i < pixels.Length; k++)
+                            pixels[i++] = run;
+                    }
+                    else
+                    {
+                        for (int k = 0; k < count && i < pixels.Length; k++)
+                        {
+                            byte b = bytes[src++];
+                            byte g = bytes[src++];
+                            byte r = bytes[src++];
+                            byte a = bpp == 32 ? bytes[src++] : (byte)255;
+                            pixels[i++] = new Color32(r, g, b, a);
+                        }
+                    }
+                }
+            }
+        }
+        catch (System.IndexOutOfRangeException)
+        {
+            return null;
+        }
+
+        // TGA rows run bottom-up unless the origin bit says top; SetPixels32
+        // expects bottom-up
+        if (topOrigin)
+        {
+            Color32[] flipped = new Color32[pixels.Length];
+            for (int row = 0; row < height; row++)
+                System.Array.Copy(pixels, row * width, flipped, (height - 1 - row) * width, width);
+            pixels = flipped;
+        }
+
+        Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, true, linear)
+        {
+            hideFlags = HideFlags.HideAndDontSave
+        };
+        tex.SetPixels32(pixels);
+        tex.Apply(true);
         tex.wrapMode = wrapMode;
         return tex;
     }
@@ -234,11 +392,13 @@ public static class NKLIMapSynthesizer
         string occPath = dir + "/" + baseName + "_occlusion.png";
 
         // The Julia seed comes from the albedo's own folder, so the crystal
-        // mask and facet lattice land in step with the albedo's bake
+        // mask and facet lattice land in step with the albedo's bake. No
+        // orientation voting anywhere: the chain's parity is deterministic,
+        // and per-map votes once split mirrored maps apart from their family
         bool ok =
-            BakeStylized(chainAlbedo, 0, synthRT, w, h, mipCount, wraps, linearProject, albedoPath, specPath) &&
-            BakeStylized(chainAlbedo, 1, synthRT, w, h, mipCount, wraps, false, albedoPath, metalPath) &&
-            BakePristine(chainAlbedo, 2, synthRT, w, h, occPath);
+            BakeStylized(chainAlbedo, 0, synthRT, w, h, mipCount, wraps, linearProject, false, albedoPath, specPath) &&
+            BakeStylized(chainAlbedo, 1, synthRT, w, h, mipCount, wraps, false, false, albedoPath, metalPath) &&
+            BakeStylized(chainAlbedo, 2, synthRT, w, h, mipCount, wraps, false, true, albedoPath, occPath);
 
         RenderTexture.ReleaseTemporary(synthRT);
         RenderTexture.active = RTActive;
@@ -259,28 +419,19 @@ public static class NKLIMapSynthesizer
     }
 
     static bool BakeStylized(Texture source, int pass, RenderTexture synthRT,
-        int w, int h, int mipCount, bool wraps, bool srgbEncode, string seedPath, string outputPath)
+        int w, int h, int mipCount, bool wraps, bool srgbEncode, bool isOcclusion, string seedPath, string outputPath)
     {
         Graphics.Blit(source, synthRT, materialSynth, pass);
 
         RenderTexture dest = RenderTexture.GetTemporary(NKLITextureProcessor.ChainDescriptor(w, h, mipCount));
         bool ok = NKLITextureProcessor.RenderStylized(synthRT, dest, w, h, mipCount,
-            false, true, wraps, srgbEncode, seedPath);
+            false, !isOcclusion, isOcclusion, wraps, srgbEncode, seedPath);
         if (ok)
             ok = SavePng(dest, w, h, srgbEncode, outputPath);
         else
             Debug.LogWarning("Somnia Fracta: effect shaders unavailable; map not generated: " + outputPath);
         RenderTexture.ReleaseTemporary(dest);
         return ok;
-    }
-
-    // Occlusion maps import pristine, so this bake takes no stylization; the
-    // synthesis pass writes mirrored to pair with the top-down readback
-    static bool BakePristine(Texture source, int pass, RenderTexture synthRT,
-        int w, int h, string outputPath)
-    {
-        Graphics.Blit(source, synthRT, materialSynth, pass);
-        return SavePng(synthRT, w, h, false, outputPath);
     }
 
     static bool SavePng(RenderTexture rt, int w, int h, bool srgbBytes, string outputPath)
